@@ -48,26 +48,24 @@ data Lexeme = IntLit Int64
             | Punctuation String
             deriving (Show)
 
-autoSemicolon (IntLit _) = True
-autoSemicolon (StringLit _) = True
-autoSemicolon (Identifier _) = True
-autoSemicolon (Keyword "true") = True
-autoSemicolon (Keyword "false") = True
-autoSemicolon (Keyword "nil") = True
-autoSemicolon (Keyword "return") = True
-autoSemicolon (Operator "++") = True
-autoSemicolon (Operator "--") = True
-autoSemicolon (Punctuation ")") = True
-autoSemicolon (Punctuation "}") = True
-autoSemicolon _ = False
+autoSemicolon l = case l of
+    IntLit _ -> True
+    StringLit _ -> True
+    Identifier _ -> True
+    Keyword kw | kw `elem` ["true", "false", "nil", "return"] -> True
+    Operator op | op `elem` ["++", "--"] -> True
+    Punctuation p | p `elem` [")", "}"] -> True
+    _ -> False
 
 optionBool p = option False (True <$ p)
 
-whitespace = void (oneOf " \t\r\n") <|> lineComment <|> blockComment
-lineComment = void $ try (string "//") >> anyChar `manyTill` newline
-blockComment = void $ try (string "/*") >> anyChar `manyTill` try (string "*/")
+whitespace = void (oneOf " \t\r\n") <|> void lineComment <|> void blockComment
+lineComment = try (string "//") >> anyChar `manyTill` (void newline <|> eof)
+blockComment = try (string "/*") >> anyChar `manyTill` try (string "*/")
 
 punctuation = (\c -> Punctuation [c]) <$> oneOf ",.;(){}"
+
+operator = Operator <$> many1 (oneOf "+-|&=!<>*/%.:")
 
 alpha = satisfy isAsciiLower <|> satisfy isAsciiUpper <|> char '_' <?> "an alphanumeric character"
 
@@ -101,9 +99,7 @@ stringLit = do
     where
         escapeSequences = [char '\\', char '"', '\n' <$ char 'n', '\t' <$ char 't']
 
-operator = Operator <$> many1 (oneOf "+-|&=!<>*/%.:")
-
-lexeme = try $ do
+lexeme = do
     flag <- getState
     line <- sourceLine <$> getPosition
     skipMany whitespace
@@ -140,7 +136,9 @@ structure = do
 
 block = inBraces $ instruction `sepEndBy` semicolon
 
--- instruction = simpleInstruction <|> Block <$> block <|> ifInstruction <|>
+instruction = simpleInstruction <|> Block <$> block <|> ifInstruction <|> varInstruction <|> returnInstruction <|> forInstruction
+
+simpleInstruction = Expression <$> expression <|> incrementOrDecrementInstruction <|>
 
 function = do
     Keyword "func" <- lexeme
@@ -152,8 +150,12 @@ function = do
     return $ (name, Function (makeSignature params) rt body)
 
 file = do
-    Keyword "package" <- lexeme; Identifier "main" <- lexeme; semicolon
-    fmt <- optionBool $ do Keyword "import" <- lexeme; StringLit "fmt" <- lexeme; semicolon
+    Keyword "package" <- lexeme
+    Identifier "main" <- lexeme
+    semicolon
+    fmt <- optionBool $ do Keyword "import" <- lexeme
+                           StringLit "fmt" <- lexeme
+                           semicolon
     l <- many $ Left <$> structure <|> Right <$> function
     eof
     let (structs, funcs) = partitionEithers l
