@@ -2,163 +2,236 @@
 {-# LANGUAGE FlexibleContexts #-}
 module Parser where
 
-import Control.Monad
+import Control.Applicative (liftA2)
+import Control.Monad (void, guard)
 import Data.Int
 import Data.Char
-import Data.Either
 import Text.Parsec hiding (digit, hexDigit)
+import Text.Parsec.Expr hiding (Operator)
 
 type Identifier = String
 type Operator = String
 
 data Type = Tvar Identifier
           | Pointer Type
+          deriving Show
 
 data File = File { importFmt :: Bool, structures :: [(Identifier, Signature)], functions :: [(Identifier, Function)] }
+          deriving Show
 
 type Signature = [(Identifier, Type)]
 
 data Function = Function Signature [Type] [Instruction]
+              deriving Show
 
 data Instruction = Expression Expression
-                 | Increment Expression | Decrement Expression
+                 | Increment Expression
+                 | Decrement Expression
                  | Var [Identifier] (Maybe Type) [Expression]
-                 | [Expression] :=: [Expression]
+                 | Assign [Expression] [Expression]
                  | Return [Expression]
                  | Block [Instruction]
                  | If Expression [Instruction] [Instruction]
                  | For Expression [Instruction]
+                 deriving Show
 
-data Expression = Int Int64
+data Expression = Int Integer
                 | String String
                 | Boolean Bool
                 | Nil
                 | Variable Identifier
-                | Expression :.: Identifier
+                | Dot Expression Identifier
                 | Call Identifier [Expression]
                 | Print [Expression]
                 | Unary Operator Expression
                 | Binary Operator Expression Expression
+                deriving Show
 
-data Lexeme = IntLit Int64
-            | StringLit String
-            | Identifier String
-            | Keyword String
-            | Operator String
-            | Punctuation String
-            deriving (Show)
-
-autoSemicolon l = case l of
-    IntLit _ -> True
-    StringLit _ -> True
-    Identifier _ -> True
-    Keyword kw | kw `elem` ["true", "false", "nil", "return"] -> True
-    Operator op | op `elem` ["++", "--"] -> True
-    Punctuation p | p `elem` [")", "}"] -> True
-    _ -> False
+l = flip label
 
 optionBool p = option False (True <$ p)
 
-whitespace = void (oneOf " \t\r\n") <|> void lineComment <|> void blockComment
 lineComment = try (string "//") >> anyChar `manyTill` (void newline <|> eof)
 blockComment = try (string "/*") >> anyChar `manyTill` try (string "*/")
+whitestuff = void (oneOf " \t\r\n") <|> void lineComment <|> void blockComment <?> "whitespace"
+whitespace = skipMany whitestuff
 
-punctuation = (\c -> Punctuation [c]) <$> oneOf ",.;(){}"
+lexeme final p = do
+    getState >>= guard . not
+    l <- p
+    line <- sourceLine <$> getPosition
+    whitespace
+    line' <- sourceLine <$> getPosition
+    putState (line' > line && final)
+    return l
 
-operator = Operator <$> many1 (oneOf "+-|&=!<>*/%.:")
+symbol s = lexeme final $ l (show s) $ string s
+    where final = s `elem` [")", "}"]
 
-alpha = satisfy isAsciiLower <|> satisfy isAsciiUpper <|> char '_' <?> "an alphanumeric character"
+operator op = lexeme final $ l (show op) $ string op <* notFollowedBy (oneOf "=<>+-*/%&|!")
+    where final = op `elem` ["++", "--"]
+
+semicolon = ";" <$ (getState >>= guard >> putState False) <|> symbol ";" <?> "a semicolon"
+comma = symbol "," <?> "a comma"
+
+inParens = between (symbol "(") (symbol ")")
+inBraces = between (symbol "{") (symbol "}")
+
+alpha = satisfy isAsciiLower <|> satisfy isAsciiUpper <|> char '_' <?> "a letter"
+
+digit = satisfy isDigit <?> "a digit"
+
+word = liftA2 (:) alpha (many (alpha <|> digit))
 
 reserved = ["else", "false", "for", "func", "if", "import", "nil", "package", "return", "struct", "true", "type", "var"]
 
-identifier = do
-    c <- alpha
-    cs <- many (alpha <|> digit)
-    let s = c:cs
-    return $ (if s `elem` reserved then Keyword else Identifier) s
+identifier = lexeme True $ l "an identifier" $ do
+    w <- word
+    guard (w `notElem` reserved)
+    return w
 
-digit = satisfy isDigit <?> "a digit"
-hexDigit = (\c -> ord c - ord '0')      <$> satisfy isDigit
-       <|> (\c -> ord c - ord 'a' + 10) <$> oneOf "abcdef"
-       <|> (\c -> ord c - ord 'A' + 10) <$> oneOf "ABCDEF"
+keyword kw = try $ lexeme final $ l (show kw) $ do
+    w <- word
+    guard (w == kw)
+    return w
+    where final = kw `elem` ["true", "false", "nil", "return"]
 
-integer = do
+-- TODO: parse negative literals
+integer = lexeme True $ l "an integer" $ do
     n <- try hexadecimal <|> decimal
-    if n > toInteger (maxBound :: Int64) then fail "integer constants must fit in 64 bits" else
-        return $ IntLit (fromInteger n)
+    if n > toInteger (maxBound :: Int64) + 1 then fail "integer constants must fit in 64 bits" else
+        return n
     where
         decimal = read <$> many1 digit
         hexadecimal = do
             try (string "0x") <|> string "0X"
             foldl (\r d -> toInteger d + 16 * r) 0 <$> many1 hexDigit
+        hexDigit = (\c -> ord c - ord '0')      <$> satisfy isDigit
+                <|> (\c -> ord c - ord 'a' + 10) <$> oneOf "abcdef"
+                <|> (\c -> ord c - ord 'A' + 10) <$> oneOf "ABCDEF"
 
-stringLit = do
-    char '"'
-    s <- ((char '\\' >> (choice escapeSequences <|> fail "unknown escape sequence")) <|> anyChar) `manyTill` char '"'
-    return (StringLit s)
+stringLiteral = lexeme True $ l "a string literal" $ char '"' >> (escapeSequence <|> anyChar) `manyTill` char '"'
     where
-        escapeSequences = [char '\\', char '"', '\n' <$ char 'n', '\t' <$ char 't']
+        escapeSequence = char '\\' >> (choice [r <$ char c | (c, r) <- sequences] <|> fail "unknown escape sequence")
+        sequences = [('\\', '\\'), ('"', '"'), ('n', '\n'), ('t', '\t')]
 
-lexeme = do
-    flag <- getState
-    line <- sourceLine <$> getPosition
-    skipMany whitespace
-    line' <- sourceLine <$> getPosition
-    let lexAutoSemicolon = Punctuation ";" <$ (guard flag >> (guard (line' > line) <|> eof))
-    l <- lexAutoSemicolon <|> integer <|> stringLit <|> identifier <|> punctuation <|> operator
-    putState (autoSemicolon l)
-    return l
+type' = do symbol "*"
+           Pointer <$> type'
+    <|> Tvar <$> identifier
 
-comma = do Punctuation "," <- lexeme; return ()
-semicolon = do Punctuation ";" <- lexeme; return ()
-
-inParens = between (do Punctuation "(" <- lexeme; return ()) (do Punctuation ")" <- lexeme; return ())
-inBraces = between (do Punctuation "{" <- lexeme; return ()) (do Punctuation "}" <- lexeme; return ())
-
-parseType = (do Operator "*" <- lexeme; Pointer <$> parseType) <|> (do Identifier t <- lexeme; return (Tvar t))
-
-returnType = (:[]) <$> parseType <|> inParens (parseType `sepEndBy1` comma)
+returnType = (:[]) <$> type' <|> inParens (type' `sepEndBy1` comma)
 
 varsAndType = do
-    vs <- (do Identifier v <- lexeme; return v) `sepBy1` comma
-    t <- parseType
-    return (vs, t)
-
-makeSignature l = [(v, t) | (vs, t) <- l, v <- vs]
+    vs <- identifier `sepBy1` comma
+    t <- type'
+    return [(v, t) | v <- vs]
 
 structure = do
-    Keyword "type" <- lexeme
-    Identifier name <- lexeme
-    Keyword "struct" <- lexeme
-    l <- inBraces $ varsAndType `sepEndBy` semicolon
+    keyword "type"
+    name <- identifier
+    keyword "struct"
+    sig <- concat <$> inBraces (varsAndType `sepEndBy` semicolon)
     semicolon
-    return (name, makeSignature l)
-
-block = inBraces $ instruction `sepEndBy` semicolon
-
-instruction = simpleInstruction <|> Block <$> block <|> ifInstruction <|> varInstruction <|> returnInstruction <|> forInstruction
-
-simpleInstruction = Expression <$> expression <|> incrementOrDecrementInstruction <|>
+    return (name, sig)
 
 function = do
-    Keyword "func" <- lexeme
-    Identifier name <- lexeme
-    params <- inParens $ varsAndType `sepEndBy` comma
+    keyword "func"
+    name <- identifier
+    params <- concat <$> inParens (varsAndType `sepEndBy` comma)
     rt <- option [] returnType
     body <- block
     semicolon
-    return $ (name, Function (makeSignature params) rt body)
+    return (name, Function params rt body)
+
+block = inBraces $ skipMany semicolon >> instruction `sepEndBy` skipMany1 semicolon
+
+instruction = Block <$> block
+          <|> ifInstruction
+          <|> do keyword "var"
+                 vars <- identifier `sepBy1` comma
+                 t <- optionMaybe type'
+                 vals <- option [] $ symbol "=" >> expression `sepBy1` comma
+                 return (Var vars t vals)
+          <|> do keyword "return"
+                 Return <$> expression `sepBy` comma
+          <|> try (do keyword "for"
+                      cond <- option (Boolean True) expression
+                      body <- block
+                      return (For cond body))
+          <|>      do keyword "for"
+                      init <- optionMaybe simpleInstruction
+                      semicolon
+                      cond <- expression
+                      semicolon
+                      post <- option [] $ (:[]) <$> simpleInstruction
+                      body <- block
+                      let for = For cond (body ++ post)
+                      return $ case init of Just i -> Block [i, for]
+                                            Nothing -> for
+          <|> simpleInstruction
+
+ifInstruction = do
+    keyword "if"
+    cond <- expression
+    yes <- block
+    no <- option [] $ do keyword "else"
+                         block <|> (:[]) <$> ifInstruction
+    return (If cond yes no)
+
+simpleInstruction = try (do vars <- expression `sepBy1` comma
+                            symbol "="
+                            vals <- expression `sepBy1` comma
+                            return (Assign vars vals))
+                <|> try (do vars <- identifier `sepBy1` comma
+                            symbol ":="
+                            vals <- expression `sepBy1` comma
+                            return (Var vars Nothing vals))
+                <|> try (do e <- expression
+                            op <- Increment <$ operator "++" <|> Decrement <$ operator "--"
+                            return (op e))
+                <|> Expression <$> expression
+
+term = Int <$> integer
+   <|> String <$> stringLiteral
+   <|> Boolean True <$ keyword "true"
+   <|> Boolean False <$ keyword "false"
+   <|> Nil <$ keyword "nil"
+   <|> inParens expression
+   <|> try (do f <- Print <$ try fmtPrint <|> Call <$> identifier
+               params <- inParens $ expression `sepBy` comma
+               return (f params))
+   <|> Variable <$> identifier
+    where
+        fmtPrint = do
+            "fmt" <- identifier
+            symbol "."
+            "Print" <- identifier
+            return "fmt.Print"
+
+term' = do e <- term
+           foldl Dot e <$> many (symbol "." >> identifier)
+
+expression = buildExpressionParser table term'
+    where
+        table = [[unary "-", unary "*", unary "&", unary "!"]
+                ,[binary "*", binary "/", binary "%"]
+                ,[binary "+", binary "-"]
+                ,[binary "==", binary "!=", binary ">", binary ">=", binary "<", binary "<="]
+                ,[binary "&&"], [binary "||"]
+                ]
+        unary op = Prefix (Unary op <$ try (operator op))
+        binary op = Infix (Binary op <$ try (operator op)) AssocLeft
 
 file = do
-    Keyword "package" <- lexeme
-    Identifier "main" <- lexeme
-    semicolon
-    fmt <- optionBool $ do Keyword "import" <- lexeme
-                           StringLit "fmt" <- lexeme
-                           semicolon
-    l <- many $ Left <$> structure <|> Right <$> function
-    eof
-    let (structs, funcs) = partitionEithers l
-    return $ File fmt structs funcs
+    whitespace
+    keyword "package"; "main" <- identifier; semicolon
+    fmt <- optionBool $ do keyword "import"; "fmt" <- stringLiteral; semicolon
+    scan (File fmt [] [])
+    where
+        scan file = do s <- structure
+                       scan file { structures = s:structures file }
+                <|> do f <- function
+                       scan file { functions = f:functions file }
+                <|> file <$ eof
 
 parseGo = runParser file False
