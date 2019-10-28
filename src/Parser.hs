@@ -213,11 +213,12 @@ term' = do e <- term
 
 expression = buildExpressionParser table term'
     where
-        table = [[unary "-", unary "*", unary "&", unary "!"]
-                ,[binary "*", binary "/", binary "%"]
-                ,[binary "+", binary "-"]
-                ,[binary "==", binary "!=", binary ">", binary ">=", binary "<", binary "<="]
-                ,[binary "&&"], [binary "||"]
+        table = [unary  <$> ["-", "*", "&", "!"]
+                ,binary <$> ["*", "/", "%"]
+                ,binary <$> ["+", "-"]
+                ,binary <$> ["==", "!=", ">", ">=", "<", "<="]
+                ,binary <$> ["&&"]
+                ,binary <$> ["||"]
                 ]
         unary op = Prefix (Unary op <$ try (operator op))
         binary op = Infix (Binary op <$ try (operator op)) AssocLeft
