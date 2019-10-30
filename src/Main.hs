@@ -1,28 +1,43 @@
+import Control.Monad
 import Text.Printf
 import Text.Parsec
 import Text.Parsec.Error
 import System.Environment
 import System.Exit
 
-import Parser
+import Parse
+import Type
+import Compile
 
-data Mode = ParseOnly | TypeOnly | Normal
+data Stage = Parse | Type | Compile
+           deriving (Eq, Ord)
 
-errorHeader f line column = printf "File \"%s\", line %d, characters %d-%d:" f line column column
+usage = die "usage: pgoc [ --parse-only | --type-only ] FILE"
 
-usage = error "usage: pgoc [ --parse-only | --type-only ] FILE"
+parseError err = die $
+    printf "File \"%s\", line %d, characters %d-%d:" file line column column ++
+    showErrorMessages "or" "unknown error" "expecting" "unexpected character" "end of file" (errorMessages err)
+    where pos = errorPos err; file = sourceName pos; line = sourceLine pos; column = sourceColumn pos
+
+typeError err = die "type error"
+
+stripSuffix s [] = []
+stripSuffix s l@(x:xs) | l == s    = []
+                       | otherwise = x:stripSuffix s xs
 
 main = do
     args <- getArgs
-    let (filename, mode) = case args of
-            ["--parse-only", f] -> (f, ParseOnly)
-            ["--type-only", f] -> (f, TypeOnly)
-            [f] -> (f, Normal)
-            _ -> usage
-    r <- parseGo filename <$> readFile filename
-    case r of
-        Right s -> return ()
-        Left err -> do
-            let pos = errorPos err
-            die $ errorHeader (sourceName pos) (sourceLine pos) (sourceColumn pos) ++
-                showErrorMessages "or" "unknown error" "expecting" "unexpected character" "end of file" (errorMessages err)
+    (inputFile, stage) <- maybe usage return $ case args of
+        ["--parse-only", inputFile] -> Just (inputFile, Parse)
+        ["--type-only", inputFile] -> Just (inputFile, Type)
+        [inputFile] -> Just (inputFile, Compile)
+        _ -> Nothing
+
+    f <- either parseError return . parseGo inputFile =<< readFile inputFile
+    when (stage <= Parse) exitSuccess
+
+    f' <- either typeError return (typeGo f)
+    when (stage <= Type) exitSuccess
+
+    let outputFile = stripSuffix ".go" inputFile ++ ".s"
+    writeFile outputFile (compileGo f')

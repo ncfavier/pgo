@@ -1,6 +1,6 @@
 {-# LANGUAGE NoMonomorphismRestriction #-}
 {-# LANGUAGE FlexibleContexts #-}
-module Parser where
+module Parse where
 
 import Control.Applicative (liftA2)
 import Control.Monad (void, guard)
@@ -16,7 +16,9 @@ data Type = Tvar Identifier
           | Pointer Type
           deriving Show
 
-data File = File { importFmt :: Bool, structures :: [(Identifier, Signature)], functions :: [(Identifier, Function)] }
+data File = File { importFmt :: Bool,
+                   structures :: [(Identifier, Signature)],
+                   functions :: [(Identifier, Function)] }
           deriving Show
 
 type Signature = [(Identifier, Type)]
@@ -96,7 +98,7 @@ keyword kw = try $ lexeme final $ l (show kw) $ do
     return w
     where final = kw `elem` ["true", "false", "nil", "return"]
 
--- TODO: parse negative literals
+-- TODO: parse negative literals?
 integer = lexeme True $ l "an integer" $ do
     n <- try hexadecimal <|> decimal
     if n > toInteger (maxBound :: Int64) + 1 then fail "integer constants must fit in 64 bits" else
