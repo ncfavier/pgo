@@ -4,40 +4,43 @@ import Text.Parsec
 import Text.Parsec.Error
 import System.Environment
 import System.Exit
+import System.FilePath
 
-import Parse
-import Type
-import Compile
+import Parse (parseGo)
+import Compile (compileGo)
 
 data Stage = Parse | Type | Compile
            deriving (Eq, Ord)
 
 usage = die "usage: pgoc [ --parse-only | --type-only ] FILE"
 
+errorHeader file lineStart lineEnd columnStart columnEnd =
+    if lineStart == lineEnd then
+        printf "File \"%s\", line %d, characters %d-%d:" file lineStart columnStart columnEnd
+    else
+        printf "File \"%s\", lines %d-%d, characters %d-%d:" file lineStart lineEnd columnStart columnEnd
+
 parseError err = die $
-    printf "File \"%s\", line %d, characters %d-%d:" file line column column ++
+    errorHeader file line line column column ++
     showErrorMessages "or" "unknown error" "expecting" "unexpected character" "end of file" (errorMessages err)
     where pos = errorPos err; file = sourceName pos; line = sourceLine pos; column = sourceColumn pos
 
-typeError err = die "type error"
-
-stripSuffix s [] = []
-stripSuffix s l@(x:xs) | l == s    = []
-                       | otherwise = x:stripSuffix s xs
+typeError err = die $ "type error: " ++ err
 
 main = do
+    -- Process command line arguments
     args <- getArgs
     (inputFile, stage) <- maybe usage return $ case args of
         ["--parse-only", inputFile] -> Just (inputFile, Parse)
         ["--type-only", inputFile] -> Just (inputFile, Type)
         [inputFile] -> Just (inputFile, Compile)
         _ -> Nothing
-
-    f <- either parseError return . parseGo inputFile =<< readFile inputFile
+    -- Parse
+    input <- readFile inputFile
+    f <- either parseError return $ parseGo inputFile input
     when (stage <= Parse) exitSuccess
-
-    f' <- either typeError return (typeGo f)
+    -- Compile
+    output <- either typeError return $ compileGo f
     when (stage <= Type) exitSuccess
-
-    let outputFile = stripSuffix ".go" inputFile ++ ".s"
-    writeFile outputFile (compileGo f')
+    -- Write
+    writeFile (inputFile -<.> "s") output
