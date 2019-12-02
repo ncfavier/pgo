@@ -6,8 +6,8 @@ import System.Environment
 import System.Exit
 import System.FilePath
 
-import Parse (parseGo)
-import Compile (compileGo)
+import Parse
+import Compile
 
 data Stage = Parse | Type | Compile
            deriving (Eq, Ord)
@@ -25,22 +25,22 @@ parseError err = die $
     showErrorMessages "or" "unknown error" "expecting" "unexpected character" "end of file" (errorMessages err)
     where pos = errorPos err; file = sourceName pos; line = sourceLine pos; column = sourceColumn pos
 
-typeError err = die $ "type error: " ++ err
+typeError err = die $ "type error: " ++ show err
 
 main = do
     -- Process command line arguments
     args <- getArgs
     (inputFile, stage) <- maybe usage return $ case args of
         ["--parse-only", inputFile] -> Just (inputFile, Parse)
-        ["--type-only", inputFile] -> Just (inputFile, Type)
-        [inputFile] -> Just (inputFile, Compile)
+        ["--type-only", inputFile]  -> Just (inputFile, Type)
+        [inputFile]                 -> Just (inputFile, Compile)
         _ -> Nothing
     -- Parse
     input <- readFile inputFile
-    f <- either parseError return $ parseGo inputFile input
+    f <- either parseError return $ parseFile inputFile input
     when (stage <= Parse) exitSuccess
     -- Compile
-    output <- either typeError return $ compileGo f
+    output <- either typeError return $ compileFile f
     when (stage <= Type) exitSuccess
     -- Write
     writeFile (inputFile -<.> "s") output

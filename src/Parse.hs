@@ -1,4 +1,4 @@
-module Parse where
+module Parse (parseFile) where
 
 import Control.Applicative (liftA2)
 import Control.Monad (guard)
@@ -7,46 +7,7 @@ import Data.Char
 import Text.Parsec hiding (digit, hexDigit)
 import Text.Parsec.Expr
 
-data Type = Type String
-          | Pointer Type
-          deriving Show
-
-data File = File { importFmt :: Bool
-                 , structures :: [(String, Signature)]
-                 , functions :: [(String, Function)]
-                 }
-          deriving Show
-
-addStructure s f = f { structures = s:structures f }
-addFunction fun f = f { functions = fun:functions f }
-
-type Signature = [(String, Type)]
-
-data Function = Function Signature [Type] [Statement]
-              deriving Show
-
-data Statement = Expression Expression
-               | Increment Expression
-               | Decrement Expression
-               | Var [String] (Maybe Type) [Expression]
-               | Assign [Expression] [Expression]
-               | Return [Expression]
-               | Block [Statement]
-               | If Expression [Statement] [Statement]
-               | For Expression [Statement]
-               deriving Show
-
-data Expression = Int Integer
-                | String String
-                | Boolean Bool
-                | Nil
-                | Variable String
-                | Dot Expression String
-                | Call String [Expression]
-                | Print [Expression]
-                | Unary String Expression
-                | Binary String Expression Expression
-                deriving Show
+import AST
 
 type AutoSemicolon = Bool
 
@@ -231,10 +192,12 @@ file = do
     keyword "package"; "main" <- identifier; semicolon
     fmt <- optionBool $ do keyword "import"; "fmt" <- stringLiteral; semicolon
     let scan = do s <- structure
-                  addStructure s <$> scan
+                  rest <- scan
+                  return $ rest { structures = s:structures rest }
            <|> do f <- function
-                  addFunction f <$> scan
+                  rest <- scan
+                  return $ rest { functions = f:functions rest }
            <|> File fmt [] [] <$ eof
     scan
 
-parseGo = runParser file False
+parseFile = runParser file False

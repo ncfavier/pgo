@@ -4,7 +4,7 @@ TEST   ?= -all
 
 .PHONY: $(TARGET)
 $(TARGET):
-	ghc -isrc -outputdir build $(GHCFLAGS) -O2 -o $@ src/Main.hs
+	ghc -isrc -outputdir build $(GHCFLAGS) -o $@ src/Main.hs
 
 .PHONY: test
 test:

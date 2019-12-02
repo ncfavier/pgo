@@ -2,7 +2,7 @@
 
 ## Instructions
 
-Ce projet est réalisé en Haskell, et dépend des bibliothèques `base`, `parsec`, `containers` et `mtl`, qui sont fournies avec GHC.
+Ce projet est réalisé en Haskell, et dépend des bibliothèques et extensions fournies par GHC.
 
 ## Compte-rendu
 
