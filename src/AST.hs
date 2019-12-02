@@ -13,9 +13,9 @@ instance Show Type where
 
 type Fields = [(String, Type)]
 
-data File = File { importFmt :: Bool
+data File = File { importFmt  :: Bool
                  , structures :: [(String, Fields)]
-                 , functions :: [(String, Function)]
+                 , functions  :: [(String, Function)]
                  }
 
 data Function = Function { parameters :: Fields
