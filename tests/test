@@ -20,7 +20,7 @@ test_go() {
 for f in typing/bad/*.go; do
     if test $f == typing/bad/testfile-main-1.go; then continue; fi
     if go tool compile $f > /dev/null 2>&1 ; then
-      echo "succès de go sur $f"; exit 1
+      echo "succÃ¨s de go sur $f"; exit 1
     fi
 done
 for f in typing/good/*.go; do
@@ -35,7 +35,7 @@ for f in exec-fail/*.go; do
     go tool compile $f > /dev/null ||
         (echo "echec de go sur $f"; exit 1)
     if go run compile $f > /dev/null 2>&1 ; then
-      echo "succès de go sur $f"; exit 1
+      echo "succÃ¨s de go sur $f"; exit 1
     fi
 done
 }
@@ -68,7 +68,7 @@ for f in syntax/bad/*.go; do
     case $? in
 	"0")
 	echo
-	echo "ECHEC sur "$f" (devrait échouer)";;
+	echo "ECHEC sur "$f" (devrait Ã©chouer)";;
 	"1") score=`expr $score + 1`;;
 	*)
 	echo
@@ -99,7 +99,7 @@ percent=`expr 100 \* $score / $max`;
 
 echo -n "Partie 1: $score/$max : $percent%"; }
 
-# partie 2 : tests d'analyse sémantique
+# partie 2 : tests d'analyse sÃ©mantique
 
 
 partie2 () {
@@ -118,7 +118,7 @@ for f in typing/bad/*.go; do
     case $? in
 	"0")
 	echo
-	echo "ECHEC sur "$f" (devrait échouer)";;
+	echo "ECHEC sur "$f" (devrait Ã©chouer)";;
 	"1") score=`expr $score + 1`;;
 	*)
 	echo
@@ -151,7 +151,7 @@ echo    "Partie 2: $score/$max : $percent%";
 }
 
 
-# partie 3 : tests d'exécution
+# partie 3 : tests d'exÃ©cution
 
 partie3 () {
 
@@ -190,12 +190,12 @@ for f in exec/*.go; do
 	fi
     else
 	echo
-	echo "ECHEC de la compilation sur $f (devrait réussir)"
+	echo "ECHEC de la compilation sur $f (devrait rÃ©ussir)"
     fi
 done
 echo
 
-echo "Execution conduisant à un échec"
+echo "Execution conduisant Ã  un Ã©chec"
 echo "-------------------------------"
 
 for f in exec-fail/*.go; do
@@ -207,14 +207,14 @@ for f in exec-fail/*.go; do
 	score_comp=`expr $score_comp + 1`;
 	if ./a.out > out; then
 	    echo
-	    echo "ECHEC : le code $f devrait échouer"
+	    echo "ECHEC : le code $f devrait Ã©chouer"
 	else
 		score_test=`expr $score_test + 1`;
 	        score_out=`expr $score_out + 1`;
 	fi
     else
 	echo
-	echo "ECHEC de la compilation sur $f (devrait réussir)"
+	echo "ECHEC de la compilation sur $f (devrait rÃ©ussir)"
     fi
 done
 
@@ -254,7 +254,7 @@ case $option in
         test_go;;
     * )
         echo "usage : $0 <option> <compilo>"
-        echo "spécifier une option parmi : "
+        echo "spÃ©cifier une option parmi : "
         echo "-1      : tester la partie 1"
         echo "-2      : tester la partie 2"
         echo "-3      : tester la partie 3"

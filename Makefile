@@ -10,8 +10,8 @@ $(TARGET):
 test:
 	cd tests && ./test $(TEST) ../$(TARGET)
 
-.PHONY: tar
-tar:
+.PHONY: archive
+archive:
 	tar -cvzf $(ARCHIVE).tgz --transform 's,^,$(ARCHIVE)/,' src Makefile README.md
 
 .PHONY: clean

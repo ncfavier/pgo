@@ -6,6 +6,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE OverloadedStrings #-}
 module Compile (compileFile) where
 
 import Control.Monad
@@ -16,6 +17,7 @@ import Data.Foldable
 import Data.List
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
+import Data.Maybe
 
 import AST hiding (structures, functions)
 import Pack
@@ -32,11 +34,25 @@ data TypeError = InvalidType String
                | DuplicateFunction String
                | NoMain | MainParameters | MainReturn
                | DuplicateParameter String String
+               | DuplicateLocalVariable String
                | UnboundVariable String
                | UndefinedFunction String
                | BadArity
-               | WrongType Type [Type]
+               | WrongType [Type] [Type]
                | WrongTypeForNil Type
+               | InvalidDotType Type
+               | NoMemberInType String String
+               | WrongArgumentsForNew
+               | NoSuchStructure String
+               | CannotDereference Type
+               | CannotCompare Type
+               | CannotMatchNils
+               | CannotMatchTypes Type Type
+               | ExpectedSingleType [Type]
+               | NoConcreteTypeForNil
+               | NoReturn
+               | UnusedVariable String
+               | Underscore
                | FmtNotImported | FmtNotUsed
                deriving Show
 
@@ -70,7 +86,8 @@ type FunctionCompiler = StateT FunctionState Compiler
 
 setFmtUsed = modify' \gs -> gs { fmtUsed = True }
 
-getStringLiteral s = do
+getStringLiteral "" = return (imm 0)
+getStringLiteral s = immLabel <$> do
     strings <- gets strings
     case M.lookup s strings of
         Just l -> return l
@@ -82,7 +99,35 @@ getStringLiteral s = do
 
 getBottom = gets (bottom . head . scopes)
 
-addScope s = modify' \fs -> fs { scopes = s:scopes fs }
+getVariable :: String -> FunctionCompiler (Integer, LocalVar)
+getVariable v = do
+    scopes <- gets scopes
+    let (m, scopes') = mapAccumL f Nothing scopes
+    modify' \fs -> fs { scopes = scopes' }
+    maybe (throw (UnboundVariable v)) return m
+    where
+        f Nothing s = do
+            case getValue v s of
+                Just (o, lv) -> let lv' = (o, lv { used = True }) in
+                    (Just lv', s { objects = M.insert v lv' (objects s) })
+                Nothing -> (Nothing, s)
+        f m s = (m, s)
+
+pushScope s = modify' \fs -> fs { scopes = s:scopes fs }
+popScope = modify' \fs -> fs { scopes = tail (scopes fs) }
+
+addVariable :: String -> Type -> FunctionCompiler ()
+addVariable "_" _ = return ()
+addVariable v t = do
+    s <- sizeof t
+    ~(sc:scs) <- gets scopes
+    case pushDown v (LocalVar t False) s sc of
+        Just sc' -> modify' \fs -> fs { scopes = sc':scs }
+        Nothing -> throw $ DuplicateLocalVariable v
+
+setReturned r = modify' \fs -> fs { returned = r }
+
+builtinTypes = [("int", 8), ("bool", 8), ("string", 8)]
 
 sizeof :: (MonadState GlobalState m, MonadError TypeError m) => Type -> m Integer
 sizeof (Type t) = do
@@ -90,7 +135,6 @@ sizeof (Type t) = do
     if | Just s <- M.lookup t structures -> return (size s)
        | Just s <- lookup t builtinTypes -> return s
        | otherwise                       -> throw (InvalidType t)
-    where builtinTypes = [("int", 8), ("bool", 8), ("string", 8)]
 sizeof (Pointer _) = return 8
 
 addStructures :: [(String, Fields)] -> Compiler ()
@@ -129,6 +173,11 @@ entryPoint = do
     zero rax
     ret
 
+discard :: FunctionCompiler ()
+discard = do
+    bottom <- getBottom
+    lea (bottom `rel` rbp) rsp
+
 compileFunction :: (String, Function) -> Compiler ()
 compileFunction f@(n, Function parameters returns body) = do
     when (n == "main") do
@@ -143,89 +192,225 @@ compileFunction f@(n, Function parameters returns body) = do
     paramsScope <- foldrM addParameter (emptyPackOffset 16) parameters
     let paramsSize = size paramsScope
         initialFunctionState = FunctionState f [paramsScope { bottom = 0 }] False
-    runStateT (compileBlock body) initialFunctionState
+    FunctionState{..} <- execStateT (mapM_ compileStatement body >> checkUnused) initialFunctionState
+    when (length returns > 0 && not returned) $ throw NoReturn
     leave
     ret1 (imm paramsSize)
 
+checkUnused :: FunctionCompiler ()
+checkUnused = do
+    vars <- gets (objects . head . scopes)
+    () <$ M.traverseWithKey f vars
+    where
+        f v (_, LocalVar { used = False }) = throw $ UnusedVariable v
+        f _ _ = return ()
+
 compileBlock :: [Statement] -> FunctionCompiler ()
-compileBlock = mapM_ compileStatement
+compileBlock ss = do
+    bottom <- getBottom
+    pushScope (emptyPackOffset bottom)
+    mapM_ compileStatement ss
+    checkUnused
+    popScope
 
 compileStatement :: Statement -> FunctionCompiler ()
-compileStatement (Block b) = do
-    bottom <- getBottom
-    addScope (emptyPackOffset bottom)
-    compileBlock b
+compileStatement (Block b) = compileBlock b
 compileStatement (Expression e) = do
     compileExpression e
-    bottom <- getBottom
-    lea (bottom `rel` rbp) rsp
+    discard
 compileStatement (Increment e) = do
-    return ()
+    t <- compileLeftValue e
+    matchTypes t "int"
 compileStatement (Decrement e) = do
-    return ()
+    t <- compileLeftValue e
+    matchTypes t "int"
+compileStatement (Var vs (Just t) []) = do
+    mapM_ (flip addVariable t) vs
 compileStatement (Var vs (Just t) es) = do
-    return ()
+    ts <- mapM compileExpression es
+    ts <- case ts of
+        [t] | length vs > 1 -> return t
+        _ -> mapM singleType ts
+    unless (length ts == length vs) $ throw BadArity
+    mapM_ (matchTypes t) ts
+    mapM_ (flip addVariable t) vs
 compileStatement (Var vs Nothing es) = do
-    return ()
+    ts <- mapM compileExpression es
+    ts <- case ts of
+        [t] | length vs > 1 -> return t
+        _ -> mapM singleConcreteType ts
+    unless (length ts == length vs) $ throw BadArity
+    zipWithM_ addVariable vs ts
 compileStatement (Assign vs es) = do
-    return ()
+    vts <- mapM compileLeftValue vs
+    ts <- mapM compileExpression es
+    ts <- case ts of
+        [t] | length vs > 1 -> return t
+        _ -> mapM singleType ts
+    unless (length ts == length vs) $ throw BadArity
+    zipWithM_ matchTypes vts ts
 compileStatement (Return es) = do
-    return ()
+    rts <- gets (returns . snd . currentFunction)
+    ts <- mapM compileExpression es
+    ts <- case ts of
+        [t] | length rts > 1 -> return t
+        _ -> mapM singleType ts
+    unless (length ts == length rts) $ throw BadArity
+    zipWithM_ matchTypes rts ts
+    setReturned True
 compileStatement (If cond yes no) = do
-    return ()
+    tc <- singleType =<< compileExpression cond
+    matchTypes "bool" tc
+    r0 <- gets returned
+    compileBlock yes
+    r1 <- gets returned
+    setReturned r0
+    compileBlock no
+    r2 <- gets returned
+    setReturned (r1 && r2)
 compileStatement (For cond b) = do
-    return ()
+    tc <- singleType =<< compileExpression cond
+    matchTypes "bool" tc
+    r0 <- gets returned
+    compileBlock b
+    setReturned r0
+
+compileLeftValue :: Expression -> FunctionCompiler Type
+compileLeftValue (Variable v) = do
+    scopes <- gets scopes
+    (offset, lv) <- getVariable v
+    return (varType lv)
+compileLeftValue (Dot e m) = do
+    t <- compileLeftValue e
+    t' <- case t of
+        Type t -> return t
+        Pointer (Type t) -> return t
+        _ -> throw $ InvalidDotType t
+    structures <- gets structures
+    (_, t'') <- maybe (throw (NoMemberInType t' m)) return $ getValue m $ structures M.! t'
+    return t''
+compileLeftValue (Unary "*" e) = do
+    t <- compileLeftValue e
+    case t of
+        Pointer t' -> return t'
+        _ -> throw $ CannotDereference t
 
 compileExpression :: Expression -> FunctionCompiler [Type]
 compileExpression (Int i) = do
     push (imm i)
-    return [Type "int"]
+    return ["int"]
+compileExpression (String "") = do
+    push (imm 0)
+    return ["string"]
 compileExpression (String s) = do
-    l <- getStringLiteral s
-    push (immLabel l)
-    return [Type "string"]
+    push =<< getStringLiteral s
+    return ["string"]
 compileExpression (Boolean b) = do
     push (imm (if b then 1 else 0))
-    return [Type "bool"]
+    return ["bool"]
 compileExpression Nil = do
     push (imm 0)
-    return []
+    return [NilType]
+compileExpression (Variable "_") = throw Underscore
 compileExpression (Variable v) = do
-    scopes <- gets scopes
-    lv <- maybe (throw (UnboundVariable v)) return $ asum $ getValue v <$> scopes
-    return [varType lv]
+    t <- compileLeftValue (Variable v)
+    return [t]
 compileExpression (Dot e m) = do
-    return []
+    t <- singleType =<< compileExpression e
+    t' <- case t of
+        Type t -> return t
+        Pointer (Type t) -> return t
+        _ -> throw $ InvalidDotType t
+    structures <- gets structures
+    (_, t'') <- maybe (throw (NoMemberInType t' m)) return $ getValue m $ structures M.! t'
+    return [t'']
+compileExpression (Call "new" [Variable s]) = do
+    structures <- gets structures
+    if isJust (lookup s builtinTypes) || M.member s structures then
+        return [Pointer (Type s)]
+    else
+        throw $ NoSuchStructure s
+compileExpression (Call "new" es) = do
+    throw WrongArgumentsForNew
 compileExpression (Call fn es) = do
     Function{..} <- maybe (throw (UndefinedFunction fn)) return . M.lookup fn =<< gets functions
-    when (length parameters /= length es) $ throw BadArity
+    let ps = map snd parameters
+    ts <- mapM compileExpression es
+    ts <- case ts of
+        [t] | length ps > 1 -> return t
+        _ -> mapM singleType ts
+    unless (length ts == length ps) $ throw BadArity
+    zipWithM_ matchTypes ps ts
     return returns
 compileExpression (Print es) = do
     fmtImported <- gets fmtImported
     unless fmtImported $ throw FmtNotImported
     setFmtUsed
-    printExpressions es
+    mapM_ compileExpression es
     return []
-compileExpression (Unary op e) = do
-    return []
-compileExpression (Binary op e1 e2) = do
-    return []
+compileExpression (Unary "!" e) = do
+    t <- singleType =<< compileExpression e
+    matchTypes t "bool"
+    return ["bool"]
+compileExpression (Unary "-" e) = do
+    t <- singleType =<< compileExpression e
+    matchTypes t "int"
+    return ["int"]
+compileExpression (Unary "*" e) = do
+    t <- singleType =<< compileExpression e
+    case t of
+        Pointer t' -> return [t']
+        _ -> throw $ CannotDereference t
+compileExpression (Unary "&" e) = do
+    t <- compileLeftValue e
+    return [Pointer t]
+compileExpression (Binary op e1 e2) | op `elem` ["==", "!="] = do
+    t1 <- singleType =<< compileExpression e1
+    t2 <- singleType =<< compileExpression e2
+    matchTypes t1 t2
+    return ["bool"]
+compileExpression (Binary op e1 e2) | op `elem` ["<", "<=", ">", ">="] = do
+    t1 <- singleType =<< compileExpression e1
+    matchTypes t1 "int"
+    t2 <- singleType =<< compileExpression e2
+    matchTypes t2 "int"
+    return ["bool"]
+compileExpression (Binary op e1 e2) | op `elem` ["+", "-", "*", "/", "%"] = do
+    t1 <- singleType =<< compileExpression e1
+    matchTypes t1 "int"
+    t2 <- singleType =<< compileExpression e2
+    matchTypes t2 "int"
+    return ["int"]
+compileExpression (Binary op e1 e2) | op `elem` ["&&", "||"] = do
+    t1 <- singleType =<< compileExpression e1
+    matchTypes t1 "bool"
+    t2 <- singleType =<< compileExpression e2
+    matchTypes t2 "bool"
+    return ["bool"]
 
-compileExpressionAsType :: Type -> Expression -> FunctionCompiler ()
-compileExpressionAsType (Pointer _) Nil = do
-    void $ compileExpression Nil
-compileExpressionAsType t Nil = do
-    throwError $ WrongTypeForNil t
-compileExpressionAsType t e = do
-    t' <- compileExpression e
-    unless (t' == [t]) $ throwError $ WrongType t t'
+singleType :: [Type] -> FunctionCompiler Type
+singleType [t] = return t
+singleType ts = throw $ ExpectedSingleType ts
 
-printExpressions :: [Expression] -> FunctionCompiler ()
-printExpressions = go False where
-    go _ [] = return ()
-    go s (e:es) = do
-        t <- head <$> compileExpression e
-        go (t /= Type "string") es
+singleConcreteType :: [Type] -> FunctionCompiler Type
+singleConcreteType ts = do
+    t <- singleType ts
+    case t of
+        NilType -> throw NoConcreteTypeForNil
+        _ -> return t
+
+matchTypes :: Type -> Type -> FunctionCompiler ()
+matchTypes NilType NilType = throw CannotMatchNils
+matchTypes NilType (Pointer _) = return ()
+matchTypes (Pointer _) NilType = return ()
+matchTypes t1 t2 = unless (t1 == t2) $ throw $ CannotMatchTypes t1 t2
+
+-- printExpressions :: [Expression] -> FunctionCompiler ()
+-- printExpressions = go False where
+--     go _ [] = return ()
+--     go s (e:es) = do
+--         t <- head <$> compileExpression e
+--         go (t /= "string") es
 
 compileStringLiterals :: Compiler ()
 compileStringLiterals = do

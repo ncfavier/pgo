@@ -1,15 +1,12 @@
 module AST where
 
 import Data.List
+import Data.String
 
 data Type = Type String
           | Pointer Type
+          | NilType
           deriving Eq
-
-instance Show Type where
-    show (Type t) = t
-    show (Pointer t) = '*':show t
-    showList ts = showChar '(' . showString (intercalate ", " (map show ts)) . showChar ')'
 
 type Fields = [(String, Type)]
 
@@ -43,3 +40,13 @@ data Expression = Int Integer
                 | Print [Expression]
                 | Unary String Expression
                 | Binary String Expression Expression
+
+instance Show Type where
+    show (Type t) = t
+    show (Pointer t) = '*':show t
+    show NilType = "nil"
+    showList ts = showParen (length (take 2 ts) /= 1) $
+        showString (intercalate ", " (map show ts))
+
+instance IsString Type where
+    fromString = Type

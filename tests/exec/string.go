@@ -3,9 +3,10 @@ package main
 import "fmt"
 
 func main() {
-	s := new(string) // chaîne vide
+	x := ""
+	s := &x
 	fmt.Print(4, *s, 2, "\n")
-	x := "Dave"
+	x = "Dave"
 	s = &x
 	fmt.Print("I'm sorry, ", *s, ". I'm afraid I can't do that.\n")
 }
