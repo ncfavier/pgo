@@ -1,19 +1,19 @@
-TARGET  = pgoc
-ARCHIVE = favier
-TEST   ?= -all
+target   = pgoc
+archive  = favier
+test    ?= -all
 
-.PHONY: $(TARGET)
-$(TARGET):
-	ghc -isrc -outputdir build $(GHCFLAGS) -o $@ src/Main.hs
+.PHONY: $(target)
+$(target):
+	ghc -isrc -outputdir build $(GHCFLAGS) -O2 -o $@ src/Main.hs
 
 .PHONY: test
 test:
-	cd tests && ./test $(TEST) ../$(TARGET)
+	cd tests && ./test $(test) ../$(target)
 
 .PHONY: archive
 archive:
-	tar -cvzf $(ARCHIVE).tgz --transform 's,^,$(ARCHIVE)/,' src Makefile LISEZMOI.md
+	tar -cvzf $(archive).tgz --transform 's,^,$(archive)/,' src Makefile LISEZMOI.md
 
 .PHONY: clean
 clean:
-	rm -rf build $(TARGET) $(ARCHIVE).tgz
+	rm -rf build $(target) $(archive).tgz

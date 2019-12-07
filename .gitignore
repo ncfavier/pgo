@@ -1,3 +1,5 @@
 build
 pgoc
 *.tgz
+*.s
+*out
