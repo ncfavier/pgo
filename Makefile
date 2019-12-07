@@ -12,7 +12,7 @@ test:
 
 .PHONY: archive
 archive:
-	tar -cvzf $(ARCHIVE).tgz --transform 's,^,$(ARCHIVE)/,' src Makefile README.md
+	tar -cvzf $(ARCHIVE).tgz --transform 's,^,$(ARCHIVE)/,' src Makefile LISEZMOI.md
 
 .PHONY: clean
 clean:
