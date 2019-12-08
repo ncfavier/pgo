@@ -2,17 +2,31 @@ module AST where
 
 import Data.List
 import Data.String
+import Text.Parsec
+import Text.Parsec.Pos
 
-data Type = Type String
+type Location = (SourcePos, SourcePos)
+
+infix 5 :@
+data Located a = a :@ Location
+
+forgetLocation (a :@ _) = a
+(_ :@ (start, _)) `merge` (_ :@ (_, end)) = (start, end)
+nowhere = (initialPos "", initialPos "")
+
+data Type = Type Identifier
           | Pointer Type
           | NilType
           deriving Eq
 
-type Fields = [(String, Type)]
+type Identifier = Located String
+type Operator = Located String
 
-data File = File { importFmt  :: Bool
-                 , structures :: [(String, Fields)]
-                 , functions  :: [(String, Function)]
+type Fields = [(Identifier, Type)]
+
+data File = File { importFmt  :: Maybe (Located ())
+                 , structures :: [(Identifier, Fields)]
+                 , functions  :: [(Identifier, Function)]
                  }
 
 data Function = Function { parameters :: Fields
@@ -23,30 +37,36 @@ data Function = Function { parameters :: Fields
 data Statement = Expression Expression
                | Increment Expression
                | Decrement Expression
-               | Var [String] (Maybe Type) [Expression]
-               | Assign [Expression] [Expression]
-               | Return [Expression]
+               | Var [Identifier] (Maybe Type) Expressions
+               | Assign [Expression] Expressions
+               | Return Expressions
                | Block [Statement]
                | If Expression [Statement] [Statement]
                | For Expression [Statement]
 
-data Expression = Int Integer
-                | String String
-                | Boolean Bool
-                | Nil
-                | Variable String
-                | Dot Expression String
-                | Call String [Expression]
-                | Print [Expression]
-                | Unary String Expression
-                | Binary String Expression Expression
+data Expression' = Int Integer
+                 | String String
+                 | Bool Bool
+                 | Nil
+                 | Variable Identifier
+                 | Dot Expression Identifier
+                 | Call Identifier Expressions
+                 | Print Expressions
+                 | Unary Operator Expression
+                 | Binary Operator Expression Expression
+
+type Expression = Located Expression'
+type Expressions = Located [Expression]
+
+instance Eq a => Eq (Located a) where
+    a :@ _ == b :@ _ = a == b
 
 instance Show Type where
-    show (Type t) = t
+    show (Type (t :@ _)) = t
     show (Pointer t) = '*':show t
     show NilType = "nil"
     showList ts = showParen (length (take 2 ts) /= 1) $
         showString (intercalate ", " (map show ts))
 
 instance IsString Type where
-    fromString = Type
+    fromString t = Type (t :@ undefined)

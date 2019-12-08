@@ -25,7 +25,8 @@ parseError err = die $
     showErrorMessages "or" "unknown error" "expecting" "unexpected character" "end of file" (errorMessages err)
     where pos = errorPos err; file = sourceName pos; line = sourceLine pos; column = sourceColumn pos
 
-typeError err = die $ "type error: " ++ show err
+typeError file (TypeError (start, end) e) = die $ errorHeader file ls le cs ce ++ "\ntype error: " ++ e
+    where ls = sourceLine start; le = sourceLine end; cs = sourceColumn start; ce = sourceColumn end
 
 main = do
     -- Process command line arguments
@@ -40,7 +41,7 @@ main = do
     f <- either parseError return $ parseFile inputFile input
     when (stage <= Parse) exitSuccess
     -- Compile
-    output <- either typeError return $ compileFile f
+    output <- either (typeError inputFile) return $ compileFile f
     when (stage <= Type) exitSuccess
     -- Write
     writeFile (inputFile -<.> "s") output

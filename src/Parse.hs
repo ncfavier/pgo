@@ -1,17 +1,38 @@
+{-# LANGUAGE NoMonomorphismRestriction #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 module Parse (parseFile) where
 
 import Control.Applicative (liftA2)
 import Control.Monad (guard)
 import Data.Int
 import Data.Char
+import Data.String
 import Text.Parsec hiding (digit, hexDigit)
 import Text.Parsec.Expr
+import Text.Parsec.Pos
 
 import AST
 
-type AutoSemicolon = Bool
+data ParserState = ParserState { autoSemicolon :: Bool
+                               , lexemeEnd     :: SourcePos
+                               }
 
-type Parser = Parsec String AutoSemicolon
+initialState = ParserState False (initialPos "")
+
+type Parser = Parsec String ParserState
+
+instance (a ~ String) => IsString (Parser a) where
+    fromString = keyword
+
+getAutoSemicolon = autoSemicolon <$> getState
+setAutoSemicolon b = modifyState $ \s -> s { autoSemicolon = b }
+
+getLexemeEnd = lexemeEnd <$> getState
+setLexemeEnd p = modifyState $ \s -> s { lexemeEnd = p }
 
 l = flip label
 
@@ -25,21 +46,29 @@ whitestuff = () <$ oneOf " \t\r\n" <|> () <$ lineComment <|> () <$ blockComment 
 whitespace = skipMany whitestuff
 
 lexeme final p = do
-    getState >>= guard . not
+    guard . not =<< getAutoSemicolon
     l <- p
-    line <- sourceLine <$> getPosition
+    pos <- getPosition
+    setLexemeEnd pos
+    let lineBefore = sourceLine pos
     whitespace
-    line' <- sourceLine <$> getPosition
-    putState (line' > line && final)
+    lineAfter <- sourceLine <$> getPosition
+    setAutoSemicolon (lineAfter > lineBefore && final)
     return l
+
+located p = do
+   start <- getPosition
+   r <- p
+   end <- getLexemeEnd
+   return $ r :@ (start, end)
 
 symbol s = lexeme final $ l (show s) $ string s
     where final = s `elem` [")", "}"]
 
-operator op = lexeme final $ l (show op) $ string op <* notFollowedBy (oneOf "=<>+-*/%&|!")
+operator op = located $ lexeme final $ l (show op) $ string op <* notFollowedBy (oneOf "=<>+-*/%&|!")
     where final = op `elem` ["++", "--"]
 
-semicolon = ";" <$ (getState >>= guard >> putState False) <|> symbol ";" <?> "a semicolon"
+semicolon = ";" <$ (getAutoSemicolon >>= guard >> setAutoSemicolon False) <|> symbol ";" <?> "a semicolon"
 comma = symbol "," <?> "a comma"
 
 inParens = between (symbol "(") (symbol ")")
@@ -53,18 +82,18 @@ word = liftA2 (:) alpha (many (alpha <|> digit))
 
 reserved = ["else", "false", "for", "func", "if", "import", "nil", "package", "return", "struct", "true", "type", "var"]
 
-identifier = lexeme True $ l "an identifier" $ do
+identifier = located $ lexeme True $ l "an identifier" $ do
     w <- word
     guard (w `notElem` reserved)
     return w
 
+keyword :: String -> Parser String
 keyword kw = try $ lexeme final $ l (show kw) $ do
     w <- word
     guard (w == kw)
     return w
     where final = kw `elem` ["true", "false", "nil", "return"]
 
--- TODO: parse negative literals?
 integer = lexeme True $ l "an integer" $ do
     n <- try hexadecimal <|> decimal
     if n > toInteger (maxBound :: Int64) + 1 then fail "integer constants must fit in 64 bits" else
@@ -85,46 +114,46 @@ stringLiteral = lexeme True $ l "a string literal" $ char '"' >> (escapeSequence
 
 type_ = (symbol "*" >> Pointer <$> type_) <|> Type <$> identifier
 
-returnType = single <$> type_ <|> inParens (type_ `sepEndBy1` comma)
-
 varsAndType = do
     vs <- identifier `sepBy1` comma
     t <- type_
     return [(v, t) | v <- vs]
 
+structure :: Parser (Identifier, Fields)
 structure = do
-    keyword "type"
+    "type"
     name <- identifier
-    keyword "struct"
-    sig <- concat <$> inBraces (varsAndType `sepEndBy` semicolon)
+    "struct"
+    fields <- concat <$> inBraces (varsAndType `sepEndBy` semicolon)
     semicolon
-    return (name, sig)
+    return (name, fields)
 
+function :: Parser (Identifier, Function)
 function = do
-    keyword "func"
+    "func"
     name <- identifier
-    params <- concat <$> inParens (varsAndType `sepEndBy` comma)
-    rt <- option [] returnType
+    parameters <- concat <$> inParens (varsAndType `sepEndBy` comma)
+    returns <- option [] $ single <$> type_ <|> inParens (type_ `sepEndBy1` comma)
     body <- block
     semicolon
-    return (name, Function params rt body)
+    return (name, Function{..})
 
+block :: Parser [Statement]
 block = inBraces $ skipMany semicolon >> statement `sepEndBy` skipMany1 semicolon
 
 statement = Block <$> block
         <|> ifStatement
-        <|> do keyword "var"
-               vars <- identifier `sepBy1` comma
+        <|> do "var"
+               vs <- identifier `sepBy1` comma
                t <- optionMaybe type_
-               vals <- option [] $ symbol "=" >> expression `sepBy1` comma
-               return (Var vars t vals)
-        <|> do keyword "return"
-               Return <$> expression `sepBy` comma
-        <|> try (do keyword "for"
-                    cond <- option (Boolean True) expression
+               es <- located $ option [] $ symbol "=" >> expression `sepBy1` comma
+               return (Var vs t es)
+        <|> ("return" >> Return <$> located (expression `sepBy` comma))
+        <|> try (do "for"
+                    cond <- option (Bool True :@ nowhere) expression
                     body <- block
                     return (For cond body))
-        <|>      do keyword "for"
+        <|>      do "for"
                     init <- optionMaybe simpleStatement
                     semicolon
                     cond <- expression
@@ -136,61 +165,66 @@ statement = Block <$> block
         <|> simpleStatement
 
 ifStatement = do
-    keyword "if"
+    "if"
     cond <- expression
     yes <- block
-    no <- option [] $ keyword "else" >> (block <|> single <$> ifStatement)
+    no <- option [] $ "else" >> (block <|> single <$> ifStatement)
     return (If cond yes no)
 
 simpleStatement = try (do vars <- expression `sepBy1` comma
                           symbol "="
-                          vals <- expression `sepBy1` comma
+                          vals <- located $ expression `sepBy1` comma
                           return (Assign vars vals))
               <|> try (do vars <- identifier `sepBy1` comma
                           symbol ":="
-                          vals <- expression `sepBy1` comma
+                          vals <- located $ expression `sepBy1` comma
                           return (Var vars Nothing vals))
               <|> try (do e <- expression
                           op <- Increment <$ operator "++" <|> Decrement <$ operator "--"
                           return (op e))
               <|> Expression <$> expression
 
+term :: Parser Expression'
 term = Int <$> integer
    <|> String <$> stringLiteral
-   <|> Boolean True <$ keyword "true"
-   <|> Boolean False <$ keyword "false"
-   <|> Nil <$ keyword "nil"
-   <|> inParens expression
+   <|> Bool True <$ "true"
+   <|> Bool False <$ "false"
+   <|> Nil <$ "nil"
+   <|> inParens (forgetLocation <$> expression)
    <|> try (do f <- Print <$ try fmtPrint <|> Call <$> identifier
-               params <- inParens $ expression `sepBy` comma
+               params <- located $ inParens $ expression `sepBy` comma
                return (f params))
    <|> Variable <$> identifier
     where
         fmtPrint = do
-            "fmt" <- identifier
+            "fmt" :@ _ <- identifier
             symbol "."
-            "Print" <- identifier
+            "Print" :@ _ <- identifier
             return "fmt.Print"
 
-term' = do e <- term
-           foldl Dot e <$> many (symbol "." >> identifier)
+dottedTerm = do e <- located term
+                foldl (\e m -> Dot e m :@ e `merge` m) e <$> many (symbol "." >> identifier)
 
-expression = buildExpressionParser table term' where
-    table = [ unary  <$> ["-", "*", "&", "!"]
-            , binary <$> ["*", "/", "%"]
-            , binary <$> ["+", "-"]
-            , binary <$> ["==", "!=", ">", ">=", "<", "<="]
-            , binary <$> ["&&"]
-            , binary <$> ["||"]
-            ]
-    unary op = Prefix (Unary op <$ try (operator op))
-    binary op = Infix (Binary op <$ try (operator op)) AssocLeft
+expression = buildExpressionParser operators dottedTerm
+    where
+        operators = [ unary  <$> ["-", "*", "&", "!"]
+                    , binary <$> ["*", "/", "%"]
+                    , binary <$> ["+", "-"]
+                    , binary <$> ["==", "!=", ">", ">=", "<", "<="]
+                    , binary <$> ["&&"]
+                    , binary <$> ["||"]
+                    ]
+        unary op = Prefix (do o <- try (operator op)
+                              return (\e -> Unary o e :@ o `merge` e))
+        binary op = Infix (do o <- try (operator op)
+                              return (\e1 e2 -> Binary o e1 e2 :@ e1 `merge` e2))
+                          AssocLeft
 
 file :: Parser File
 file = do
     whitespace
-    keyword "package"; "main" <- identifier; semicolon
-    fmt <- optionBool $ do keyword "import"; "fmt" <- stringLiteral; semicolon
+    "package"; "main" :@ _ <- identifier; semicolon
+    fmt <- optionMaybe $ located $ () <$ do "import"; "fmt" <- stringLiteral; semicolon
     let scan = do s <- structure
                   rest <- scan
                   return $ rest { structures = s:structures rest }
@@ -200,4 +234,4 @@ file = do
            <|> File fmt [] [] <$ eof
     scan
 
-parseFile = runParser file False
+parseFile = runParser file initialState
