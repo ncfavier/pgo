@@ -6,6 +6,7 @@ import System.Environment
 import System.Exit
 import System.FilePath
 
+import AST (Located(..))
 import Parse
 import Compile
 
@@ -25,8 +26,8 @@ parseError err = die $
     showErrorMessages "or" "unknown error" "expecting" "unexpected character" "end of file" (errorMessages err)
     where pos = errorPos err; file = sourceName pos; line = sourceLine pos; column = sourceColumn pos
 
-typeError file (TypeError (start, end) e) = die $ errorHeader file ls le cs ce ++ "\ntype error: " ++ e
-    where ls = sourceLine start; le = sourceLine end; cs = sourceColumn start; ce = sourceColumn end
+typeError file (e :@ (start, end)) = die $ errorHeader file ls le cs ce ++ "\ntype error: " ++ e
+    where [ls, le, cs, ce] = [sourceLine, sourceColumn] <*> [start, end]
 
 main = do
     -- Process command line arguments
@@ -44,4 +45,4 @@ main = do
     output <- either (typeError inputFile) return $ compileFile f
     when (stage <= Type) exitSuccess
     -- Write
-    writeFile (inputFile -<.> "s") output
+    -- writeFile (inputFile -<.> "s") output

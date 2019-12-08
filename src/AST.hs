@@ -69,4 +69,4 @@ instance Show Type where
         showString (intercalate ", " (map show ts))
 
 instance IsString Type where
-    fromString t = Type (t :@ undefined)
+    fromString t = Type (t :@ nowhere)
