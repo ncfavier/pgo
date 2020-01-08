@@ -45,4 +45,4 @@ main = do
     output <- either (typeError inputFile) return $ compileFile f
     when (stage <= Type) exitSuccess
     -- Write
-    -- writeFile (inputFile -<.> "s") output
+    writeFile (inputFile -<.> "s") output

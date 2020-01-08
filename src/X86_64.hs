@@ -13,11 +13,9 @@ emitIndented s = tell (indent ++ s ++ "\n")
 directive d = emit ('.':d)
 
 text = directive "text"
-data_ = directive "data"
+data' = directive "data"
 global s = directive ("global " ++ s)
-string s = directive ("string " ++ makeString s)
-    where
-        makeString s = "\"" ++ s ++ "\"" -- TODO
+string s = directive ("string " ++ show s)
 
 label l = emit (l ++ ":")
 
@@ -27,21 +25,24 @@ ins0 m = ins m []
 ins1 m a = ins m [a]
 ins2 m a b = ins m [a, b]
 
-[leave, ret] = ins0 <$>
-    ["leave", "ret"]
-[call, ret1, push, pop] = ins1 <$>
-    ["call", "ret", "push", "pop"]
-[mov, lea, add, sub, xor] = ins2 <$>
-    ["mov", "lea", "add", "sub", "xor"]
+[leave, ret, cqto] = ins0 <$>
+    ["leave", "ret", "cqto"]
+[call, ret1, push, pop, jmp, je, jne, sete, setne, setl, setle, setg, setge, inc, dec, neg, idiv] = ins1 <$>
+    ["call", "ret", "push", "pop", "jmp", "je", "jne", "sete", "setne", "setl", "setle", "setg", "setge", "inc", "dec", "neg", "idiv"]
+[mov, movzbq, cmove, cmovne, lea, add, sub, imul, and', or', xor, cmp] = ins2 <$>
+    ["mov", "movzbq", "cmove", "cmovne", "lea", "add", "sub", "imul", "and", "or", "xor", "cmp"]
 
 zero r = xor r r
 
 imm i = '$':show i
 immLabel l = '$':l
 
-rel disp base = show disp ++ "(" ++ base ++ ")"
+disp `rel` base = show disp ++ "(" ++ base ++ ")"
 
 register = ('%':)
 
-[rax, rbx, rcx, rdx, rbp, rsp, rsi, rdi] = register <$>
-    ["rax", "rbx", "rcx", "rdx", "rbp", "rsp", "rsi", "rdi"]
+[al, rax, rbx, rcx, rdx, rbp, rsp, rsi, rdi] = register <$>
+    ["al", "rax", "rbx", "rcx", "rdx", "rbp", "rsp", "rsi", "rdi"]
+
+infix 3 `Rel`
+data Relative = Integer `Rel` String

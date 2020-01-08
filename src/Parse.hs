@@ -112,11 +112,11 @@ stringLiteral = lexeme True $ l "a string literal" $ char '"' >> (escapeSequence
         escapeSequence = char '\\' >> (choice [r <$ char c | (c, r) <- sequences] <|> fail "unknown escape sequence")
         sequences = [('\\', '\\'), ('"', '"'), ('n', '\n'), ('t', '\t')]
 
-type_ = (symbol "*" >> Pointer <$> type_) <|> Type <$> identifier
+type' = (symbol "*" >> Pointer <$> type') <|> Type <$> identifier
 
 varsAndType = do
     vs <- identifier `sepBy1` comma
-    t <- type_
+    t <- type'
     return [(v, t) | v <- vs]
 
 structure :: Parser (Identifier, Fields)
@@ -133,7 +133,7 @@ function = do
     "func"
     name <- identifier
     parameters <- concat <$> inParens (varsAndType `sepEndBy` comma)
-    returns <- option [] $ single <$> type_ <|> inParens (type_ `sepEndBy1` comma)
+    returns <- option [] $ single <$> type' <|> inParens (type' `sepEndBy1` comma)
     body <- block
     semicolon
     return (name, Function{..})
@@ -145,7 +145,7 @@ statement = Block <$> block
         <|> ifStatement
         <|> do "var"
                vs <- identifier `sepBy1` comma
-               t <- optionMaybe type_
+               t <- optionMaybe type'
                es <- located $ option [] $ symbol "=" >> expression `sepBy1` comma
                return (Var vs t es)
         <|> ("return" >> Return <$> located (expression `sepBy` comma))

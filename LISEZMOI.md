@@ -14,7 +14,7 @@ Il y a sans doute des façons plus élégantes de faire ça, notamment en sépar
 
 J'ai choisi de faire le typage et la production de code en une seule étape, dans le module `Compile`.
 
-Le module `Pack` fournit un type `Pack` permettant de représenter une zone contiguë en mémoire dans laquelle sont stockés des objets nommés. Il est utilisé pour les champs de structures et pour les variables locales.
+Le module `Pack` fournit un type `Pack` permettant de représenter une zone contiguë en mémoire dans laquelle sont stockés des objets, éventuellement nommés.
 
 La compilation globale a lieu dans la monade `Compiler`, composée des niveaux suivants :
 
@@ -23,3 +23,5 @@ La compilation globale a lieu dans la monade `Compiler`, composée des niveaux s
 - `StateT GlobalState` pour l'état global.
 
 La compilation des fonctions a lieu dans la monade `FunctionCompiler`, qui rajoute un niveau `StateT FunctionState` par-dessus la monade `Compiler`.
+
+Aucune optimisation n'est recherchée.
