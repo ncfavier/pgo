@@ -11,6 +11,7 @@ emit s = tell (s ++ "\n")
 emitIndented s = tell (indent ++ s ++ "\n")
 
 directive d = emit ('.':d)
+comment c = emit ('#':c)
 
 text = directive "text"
 data' = directive "data"
@@ -29,13 +30,14 @@ ins2 m a b = ins m [a, b]
     ["leave", "ret", "cqto"]
 [call, ret1, push, pop, jmp, je, jne, sete, setne, setl, setle, setg, setge, inc, dec, neg, idiv] = ins1 <$>
     ["call", "ret", "push", "pop", "jmp", "je", "jne", "sete", "setne", "setl", "setle", "setg", "setge", "inc", "dec", "neg", "idiv"]
-[mov, movzbq, cmove, cmovne, lea, add, sub, imul, and', or', xor, cmp] = ins2 <$>
-    ["mov", "movzbq", "cmove", "cmovne", "lea", "add", "sub", "imul", "and", "or", "xor", "cmp"]
+[mov, movq, movzbq, cmove, cmovne, lea, add, sub, imul, and', or', xor, cmp] = ins2 <$>
+    ["mov", "movq", "movzbq", "cmove", "cmovne", "lea", "add", "sub", "imul", "and", "or", "xor", "cmp"]
 
 zero r = xor r r
 
 imm i = '$':show i
 immLabel l = '$':l
+immBool b = '$':if b then "1" else "0"
 
 disp `rel` base = show disp ++ "(" ++ base ++ ")"
 

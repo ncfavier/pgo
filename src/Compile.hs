@@ -1,6 +1,5 @@
 {-# LANGUAGE NoMonomorphismRestriction #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -21,7 +20,8 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as M
 import Data.Maybe
 
-import AST hiding (structures, functions)
+import AST hiding (structures, functions, Function(..))
+import qualified AST
 import Pack (Pack)
 import qualified Pack as P
 import X86_64
@@ -53,16 +53,24 @@ data GlobalState = GlobalState { structures         :: Map String (Maybe Structu
 
 type Structure = Pack Type
 
-data FunctionState = FunctionState { currentFunction :: (Identifier, Function)
+data Function = Function { functionName   :: Identifier
+                         , parameters     :: Fields
+                         , returns        :: [Type]
+                         , body           :: [Statement]
+                         , parametersPack :: Scope
+                         , returnPack     :: Pack Type
+                         }
+
+data FunctionState = FunctionState { currentFunction :: Function
                                    , scopes          :: [Scope]
                                    , returned        :: Bool
                                    , returnLabel     :: String
-                                   , returnPack      :: Pack Type
                                    }
 
-data LocalVar = LocalVar { varType   :: Type
-                         , used      :: Bool
-                         , definedAt :: Location
+data LocalVar = LocalVar { varType         :: Type
+                         , used            :: Bool
+                         , definedAt       :: Location
+                         , allocatedOnHeap :: Bool
                          }
 
 type Scope = Pack LocalVar
@@ -100,37 +108,28 @@ getBottom = gets (P.bottom . head . scopes)
 pushScope s = modify' $ \fs -> fs { scopes = s:scopes fs }
 popScope = modify' $ \fs -> fs { scopes = tail (scopes fs) }
 
-getLocalVar :: Identifier -> FunctionCompiler (Integer, LocalVar)
-getLocalVar (v :@ l) = do
+getLocalVar :: Bool -> Identifier -> FunctionCompiler (Integer, LocalVar)
+getLocalVar used (v :@ l) = do
     scopes <- gets scopes
     let (m, scopes') = mapAccumL f Nothing scopes
     modify' $ \fs -> fs { scopes = scopes' }
     maybe (throwAt l $ "unbound variable " ++ v) return m
     where
         f Nothing s | Just (o, lv) <- P.getOffsetAndValueByName v s =
-                        (Just (o, lv), P.updateByName v lv { used = True } s)
+                        (Just (o, lv), P.updateByName v lv { used } s)
                     | otherwise = (Nothing, s)
         f m s = (m, s)
 
-addLocalVar :: Type -> Identifier -> FunctionCompiler ()
-addLocalVar t (v :@ l) = do
-    s <- sizeof t
-    ~(sc:scs) <- gets scopes
-    sc' <- case v of
-        "_" -> return $ P.pushDown s (LocalVar t True l) sc
-        _ | Just sc' <- P.pushDownWithName v s (LocalVar t False l) sc -> return sc'
-          | otherwise                                                  -> throwAt l $ "redefined variable " ++ v
-    modify' $ \fs -> fs { scopes = sc':scs }
-
 setReturned r = modify' $ \fs -> fs { returned = r }
 
-builtinTypes = [("int", 8), ("bool", 8), ("string", 8)]
-
+sizeof (Type ("int" :@ _)) = return 8
+sizeof (Type ("bool" :@ _)) = return 8
+sizeof (Type ("string" :@ _)) = return 8
 sizeof (Type (t :@ l)) = do
     structures <- gets structures
-    if | Just s <- M.lookup t structures -> return (maybe 0 P.size s)
-       | Just s <- lookup t builtinTypes -> return s
-       | otherwise                       -> throwAt l $ "invalid type " ++ t
+    case M.lookup t structures of
+        Just s -> return (maybe 0 P.size s)
+        _      -> throwAt l $ "invalid type " ++ t
 sizeof (Pointer t) = 8 <$ sizeof t
 sizeof NilType = return 8
 
@@ -162,8 +161,26 @@ addStructures structuresList = do
                 modify' $ \gs -> gs { structures = M.insert n (Just structure) (structures gs) }
     mapM_ addStructure (M.keysSet rawStructures)
 
-addFunctions :: [(Identifier, Function)] -> Compiler ()
-addFunctions = mapM_ $ \(n :@ l, f) -> do
+addFunctions :: [(Identifier, AST.Function)] -> Compiler ()
+addFunctions = mapM_ $ \(n :@ l, AST.Function parameters returns body) -> do
+    when (n == "main") $ do
+        unless (null parameters) $ throwAt l "main should not take any parameters"
+        unless (null returns)    $ throwAt l "main should not return anything"
+    let addParameter (v :@ l, t) sc = do
+            s <- sizeof t
+            let allocatedOnHeap = shouldAllocateOnHeap v body
+                lv = LocalVar { varType   = t
+                              , used      = True
+                              , definedAt = nowhere
+                              , allocatedOnHeap
+                              }
+                s' | allocatedOnHeap = 8
+                   | otherwise       = s
+            maybe (throwAt l $ "duplicate parameter " ++ v ++ " in function " ++ n) return $
+                P.pushUpWithName v s' lv sc
+    parametersPack <- foldrM addParameter (P.emptyPackAt 16) parameters
+    returnPack <- packTypesUpwards (P.top parametersPack) returns
+    let f = Function { functionName = n :@ l, .. }
     functions <- gets functions
     when (n `M.member` functions) $ throwAt l $ "duplicate function " ++ n
     modify' $ \gs -> gs { functions = M.insert n f functions }
@@ -178,28 +195,20 @@ entryPoint = do
     zero rax
     ret
 
-compileFunction :: (Identifier, Function) -> Compiler ()
-compileFunction f@(n :@ l, Function parameters returns body) = do
-    when (n == "main") $ do
-        unless (null parameters) $ throwAt l "main should not take any parameters"
-        unless (null returns)    $ throwAt l "main should not return anything"
+compileFunction :: Function -> Compiler ()
+compileFunction f@Function{..} = do
+    let n :@ l = functionName
     label (function n)
     push rbp
     mov rsp rbp
-    let addParameter (v :@ l, t) s = do
-            s' <- sizeof t
-            maybe (throwAt l $ "duplicate parameter " ++ v ++ " in function " ++ n) return $ P.pushUpWithName v s' (LocalVar t True nowhere) s
-    paramsScope <- foldrM addParameter (P.emptyPackAt 16) parameters
-    returnPack <- packTypesUpwards (P.top paramsScope) returns
     returnLabel <- getFreshLabel
-    let paramsSize = P.size paramsScope
+    let paramsSize = P.size parametersPack
         initialFunctionState = FunctionState { currentFunction = f
-                                             , scopes = [paramsScope { P.bottom = 0 }]
+                                             , scopes = [parametersPack { P.bottom = 0 }]
                                              , returned = False
                                              , returnLabel
-                                             , returnPack
                                              }
-    FunctionState{..} <- execStateT (mapM_ compileStatement body >> checkUnused) initialFunctionState
+    FunctionState{..} <- execStateT (compileStatements body) initialFunctionState
     when (length returns > 0 && not returned) $ throwAt l $ "missing return statement in function " ++ n
     label returnLabel
     leave
@@ -208,10 +217,25 @@ compileFunction f@(n :@ l, Function parameters returns body) = do
 checkUnused :: FunctionCompiler ()
 checkUnused = do
     vars <- gets (P.nameAssocs . head . scopes)
-    void $ traverse f vars
-    where
-        f (v, LocalVar { used = False, definedAt = l }) = throwAt l $ "unused variable " ++ v
-        f _ = return ()
+    sequence_ [ throwAt l $ "unused variable " ++ v
+              | (v, LocalVar { used = False, definedAt = l }) <- vars ]
+
+compQuad :: Relative -> Relative -> FunctionCompiler ()
+compQuad (ao `Rel` ab) (bo `Rel` bb) = do
+    mov (ao `rel` ab) rax
+    cmp (bo `rel` bb) rax
+    jne "0f"
+
+comp :: Type -> Relative -> Relative -> FunctionCompiler ()
+comp (Type ("int" :@ _)) = compQuad
+comp (Type ("bool" :@ _)) = compQuad
+comp (Type ("string" :@ _)) = compQuad
+comp (Type (s :@ _)) = \(ao `Rel` ab) (bo `Rel` bb) -> do
+    struct <- getStructure s
+    forM_ (P.upwardsAssocs struct) $ \(o, t) ->
+        comp t (ao + o `Rel` ab) (bo + o `Rel` bb)
+comp (Pointer _) = compQuad
+comp NilType = compQuad
 
 moveQuad :: Relative -> Relative -> FunctionCompiler ()
 moveQuad (so `Rel` sb) (to `Rel` tb) = do
@@ -222,11 +246,27 @@ move :: Type -> Relative -> Relative -> FunctionCompiler ()
 move (Type ("int" :@ _)) = moveQuad
 move (Type ("bool" :@ _)) = moveQuad
 move (Type ("string" :@ _)) = moveQuad
-move (Pointer _) = moveQuad
-move NilType = moveQuad
 move (Type (s :@ _)) = \(so `Rel` sb) (to `Rel` tb) -> do
     struct <- getStructure s
-    forM_ (P.upwardsAssocs struct) $ \(o, t) -> move t (so + o `Rel` sb) (to + o `Rel` tb)
+    forM_ (P.upwardsAssocs struct) $ \(o, t) ->
+        move t (so + o `Rel` sb) (to + o `Rel` tb)
+move (Pointer _) = moveQuad
+move NilType = moveQuad
+
+moveZeroQuad :: Relative -> FunctionCompiler ()
+moveZeroQuad (to `Rel` tb) = do
+    movq (imm 0) (to `rel` tb)
+
+moveZero :: Type -> Relative -> FunctionCompiler ()
+moveZero (Type ("int" :@ _)) = moveZeroQuad
+moveZero (Type ("bool" :@ _)) = moveZeroQuad
+moveZero (Type ("string" :@ _)) = moveZeroQuad
+moveZero (Type (s :@ _)) = \(to `Rel` tb) -> do
+    struct <- getStructure s
+    forM_ (P.upwardsAssocs struct) $ \(o, t) ->
+        moveZero t (to + o `Rel` tb)
+moveZero (Pointer _) = moveZeroQuad
+moveZero NilType = moveZeroQuad
 
 printCharacter c = do
     mov (imm (ord c)) rdi
@@ -238,15 +278,18 @@ printNil = do
     zero rax
     call "printf"
 
-printExpressions :: Bool -> String -> Pack Type -> FunctionCompiler ()
-printExpressions alwaysSpace base p = do
-    void $ runStateT (P.traverseDownwards (printExpression alwaysSpace base) p) False
+printExpressions :: Bool -> Relative -> [(Integer, Type)] -> FunctionCompiler ()
+printExpressions alwaysSpace (o `Rel` base) es = do
+    flip evalStateT False $ forM_ es $ \(o', t) ->
+        printExpression alwaysSpace (o + o' `Rel` base) t
 
-printExpression :: Bool -> String -> Integer -> Type -> StateT Bool FunctionCompiler ()
-printExpression alwaysSpace base o t = do
+printExpression :: Bool -> Relative -> Type -> StateT Bool FunctionCompiler ()
+printExpression alwaysSpace (o `Rel` base) t = do
     space <- get
     case t of
-        Type ("string" :@ _) -> put alwaysSpace
+        Type ("string" :@ _) -> do
+            when alwaysSpace (printCharacter ' ')
+            put alwaysSpace
         _ -> do
             when space (printCharacter ' ')
             put True
@@ -258,10 +301,10 @@ printExpression alwaysSpace base o t = do
             zero rax
             call "printf"
         Type ("bool" :@ _) -> do
-            falseFmt <- getStringLiteral "false"
-            trueFmt <- getStringLiteral "true"
-            mov falseFmt rax
-            mov trueFmt rbx
+            false <- getStringLiteral "false"
+            true <- getStringLiteral "true"
+            mov false rax
+            mov true rbx
             cmp (imm 0) (o `rel` base)
             cmove rax rdi
             cmovne rbx rdi
@@ -278,14 +321,10 @@ printExpression alwaysSpace base o t = do
             call "printf"
             label "0"
         Type (s :@ _) -> do
-            fmt <- getStringLiteral $ "{struct " ++ s ++ "}"
-            mov fmt rdi
-            zero rax
-            call "printf"
-            -- printCharacter '{'
-            -- struct <- getStructure s
-            -- lift $ printExpressions True base struct
-            -- printCharacter '}'
+            printCharacter '{'
+            struct <- getStructure s
+            lift $ printExpressions True (o `Rel` base) (P.upwardsAssocs struct)
+            printCharacter '}'
         NilType -> printNil
         Pointer _ -> do
             mov (o `rel` base) rax
@@ -301,73 +340,130 @@ printExpression alwaysSpace base o t = do
             printNil
             label "1"
 
+shouldAllocateOnHeap :: String -> [Statement] -> Bool
+shouldAllocateOnHeap v b = any f b
+    where
+        f (Expression e) = g e
+        f (Var _ _ (es :@ _)) = any g es
+        f (Assign _ (es :@ _)) = any g es
+        f (Return (es :@ _)) = any g es
+        f (Block b) = any f b
+        f (If cond yes no) = g cond || any f yes || any f no
+        f (For cond body) = g cond || any f body
+        f _ = False
+        g (Dot e _ :@ _) = g e
+        g (Call _ (es :@ _) :@ _) = any g es
+        g (Print (es :@ _) :@ _) = any g es
+        g (Unary ("&" :@ _) e :@ _) = h e
+        g (Unary _ e :@ _) = g e
+        g (Binary _ e1 e2 :@ _) = g e1 || g e2
+        g _ = False
+        h (Variable (v' :@ _) :@ _) = v == v'
+        h (Dot e _ :@ _) = h e
+        h _ = False
+
+allocateVar :: LocalVar -> FunctionCompiler Integer
+allocateVar LocalVar{..} = do
+    s <- sizeof varType
+    if allocatedOnHeap then do
+        mov (imm 1) rdi
+        mov (imm s) rsi
+        call "calloc"
+        push rax
+        return 8
+    else do
+        sub (imm s) rsp
+        moveZero varType (0 `Rel` rsp)
+        return s
+
 compileBlock :: [Statement] -> FunctionCompiler ()
 compileBlock b = do
     bottom <- getBottom
     pushScope (P.emptyPackAt bottom)
-    mapM_ compileStatement b
-    checkUnused
+    compileStatements b
     popScope
     lea (bottom `rel` rbp) rsp
 
-compileStatement :: Statement -> FunctionCompiler ()
-compileStatement (Block b) = compileBlock b
-compileStatement (Expression e) = do
+compileStatements :: [Statement] -> FunctionCompiler ()
+compileStatements (s:b) = compileStatement s b >> compileStatements b
+compileStatements []    = checkUnused
+
+compileStatement :: Statement -> [Statement] -> FunctionCompiler ()
+compileStatement (Block b) _ = compileBlock b
+compileStatement (Expression e) _ = do
     compileExpression e
     bottom <- getBottom
     lea (bottom `rel` rbp) rsp
-compileStatement (Increment e) = do
+compileStatement (Increment e) _ = do
     compileLeftValueAs "int" e
-    pop rax
-    mov (0 `rel` rax) rbx
-    inc rbx
-    mov rbx (0 `rel` rax)
-compileStatement (Decrement e) = do
+    pop rbx
+    mov (0 `rel` rbx) rax
+    inc rax
+    mov rax (0 `rel` rbx)
+compileStatement (Decrement e) _ = do
     compileLeftValueAs "int" e
-    pop rax
-    mov (0 `rel` rax) rbx
-    dec rbx
-    mov rbx (0 `rel` rax)
-compileStatement (Var vs (Just t) ([] :@ _)) = do
-    s <- sizeof t
-    let s' = s * genericLength vs
-    sub (imm s') rsp
-    mov rsp rdi
-    zero rsi
-    mov (imm s') rdx
-    call "memset"
-    mapM_ (addLocalVar t) vs
-compileStatement (Var vs (Just t) es) = do
-    compileExpressionsAs (t <$ vs) es
-    mapM_ (addLocalVar t) vs
-compileStatement (Var vs Nothing es@(_ :@ l)) = do
-    ts <- compileExpressionsWith compileConcreteExpression es
+    pop rbx
+    mov (0 `rel` rbx) rax
+    dec rax
+    mov rax (0 `rel` rbx)
+compileStatement (Var vs mt es@(_ :@ l)) b = do
+    (ts, compiledExpressions) <- censor (const "") $ listen $ case mt of
+        Just t -> (t <$ vs) <$ case es of
+            [] :@ _ -> return ()
+            _ -> compileExpressionsAs (t <$ vs) es
+        Nothing -> compileExpressionsWith compileConcreteExpression es
     unless (length ts == length vs) $ throwAt l $ "expected " ++ nThings (length vs) "value" ++ ", got " ++ nThings (length ts) "value"
-    zipWithM_ addLocalVar ts vs
-compileStatement (Assign vs es) = do
+    forM_ (zip vs ts) $ \(v :@ l, t) -> case v of
+        "_" -> return ()
+        _ -> do
+            let allocatedOnHeap = shouldAllocateOnHeap v b
+                lv = LocalVar { varType   = t
+                            , used      = False
+                            , definedAt = l
+                            , allocatedOnHeap
+                            }
+            s <- allocateVar lv
+            ~(sc:scs) <- gets scopes
+            sc' <- maybe (throwAt l $ "redefined variable " ++ v) return $
+                P.pushDownWithName v s lv sc
+            modify' $ \fs -> fs { scopes = sc':scs }
+    unless (null compiledExpressions) $ do
+        tell compiledExpressions
+        bottom <- getBottom
+        p <- packTypesDownwards bottom ts
+        forM_ (zip vs (P.downwardsAssocs p)) $ \(v, (eo, t)) -> case v of
+            "_" :@ _ -> return ()
+            _ -> do
+                (vo, LocalVar{..}) <- getLocalVar False v
+                if allocatedOnHeap then do
+                    mov (vo `rel` rbp) rbx
+                    move t (eo `Rel` rbp) (0 `Rel` rbx)
+                else do
+                    move t (eo `Rel` rbp) (vo `Rel` rbp)
+        lea (bottom `rel` rbp) rsp
+compileStatement (Assign vs es) _ = do
     bottom <- getBottom
-    ts <- mapM compileLeftValue vs
-    pv <- packTypesDownwards bottom (NilType <$ vs)
-    compileExpressionsAs ts es
-    pe <- packTypesDownwards (P.bottom pv) ts
-    let f (vo, _) (eo, t) = do
-            mov (vo `rel` rbp) rbx
-            move t (eo `Rel` rbp) (0 `Rel` rbx)
-    zipWithM f (M.assocs (P.objects pv)) (M.assocs (P.objects pe))
+    ts <- compileExpressionsWith compileSimpleExpression es
+    pe <- packTypesDownwards bottom ts
+    forM_ (zip vs (P.downwardsAssocs pe)) $ \(v, (o, t)) -> case v of
+        Variable ("_" :@ _) :@ _ -> return ()
+        _ -> do
+            compileLeftValueAs t v
+            pop rbx
+            move t (o `Rel` rbp) (0 `Rel` rbx)
     lea (bottom `rel` rbp) rsp
-compileStatement (Return es) = do
-    (f :@ _, Function{..}) <- gets currentFunction
+compileStatement (Return es) _ = do
+    Function{..} <- gets currentFunction
     bottom <- getBottom
     compileExpressionsAs returns es
     pe <- packTypesDownwards bottom returns
-    pr <- gets returnPack
     let f (ro, _) (eo, t) = do
             move t (eo `Rel` rbp) (ro `Rel` rbp)
-    zipWithM f (M.assocs (P.objects pr)) (M.assocs (P.objects pe))
+    zipWithM f (P.downwardsAssocs returnPack) (P.downwardsAssocs pe)
     returnLabel <- gets returnLabel
     jmp returnLabel
     setReturned True
-compileStatement (If cond yes no) = do
+compileStatement (If cond yes no) _ = do
     compileExpressionAs "bool" cond
     pop rax
     cmp (imm 0) rax
@@ -384,7 +480,7 @@ compileStatement (If cond yes no) = do
     r2 <- gets returned
     setReturned (r1 && r2)
     label labelEnd
-compileStatement (For cond b) = do
+compileStatement (For cond b) _ = do
     labelBody <- getFreshLabel
     labelCond <- getFreshLabel
     jmp labelCond
@@ -399,30 +495,31 @@ compileStatement (For cond b) = do
     jne labelBody
 
 compileLeftValue :: Expression -> FunctionCompiler Type
+compileLeftValue (Variable ("_" :@ l) :@ _) = throwAt l "invalid use of _ as a left-value"
 compileLeftValue (Variable v :@ _) = do
-    (o, LocalVar{..}) <- getLocalVar v
-    lea (o `rel` rbp) rax
-    push rax
+    (o, LocalVar{..}) <- getLocalVar True v
+    (if allocatedOnHeap then mov else lea) (o `rel` rbp) rbx
+    push rbx
     return varType
 compileLeftValue (Dot (e :@ le) (m :@ lm) :@ _) = do
     t <- compileLeftValue (e :@ le)
-    pop rax
+    pop rbx
     s :@ _ <- case t of
         Type t -> return t
         Pointer (Type t) -> do
-            mov (0 `rel` rax) rax
+            mov (0 `rel` rbx) rbx
             return t
         _ -> throwAt le $ "type " ++ show t ++ " cannot be accessed"
     (o, t') <- maybe (throwAt lm $ "no member " ++ m ++ " in type " ++ s) return =<< getMember s m
-    add (imm o) rax
-    push rax
+    add (imm o) rbx
+    push rbx
     return t'
 compileLeftValue (Unary ("*" :@ _) (e :@ l) :@ _) = do
     t <- compileLeftValue (e :@ l)
     case t of
         Pointer t' -> do
-            pop rax
-            push (0 `rel` rax)
+            pop rbx
+            push (0 `rel` rbx)
             return t'
         _ -> throwAt l $ "cannot dereference a value of type " ++ show t
 compileLeftValue (e :@ l) = throwAt l "this expression is not a left value"
@@ -447,12 +544,16 @@ compileExpression (Bool b :@ _) = do
 compileExpression (Nil :@ _) = do
     push (imm 0)
     return [NilType]
-compileExpression (Variable ("_" :@ l) :@ _) = throwAt l "the variable _ has no value"
+compileExpression (Variable ("_" :@ l) :@ _) = throwAt l "invalid use of _ in an expression"
 compileExpression (Variable v :@ _) = do
-    (o, LocalVar{..}) <- getLocalVar v
+    (o, LocalVar{..}) <- getLocalVar True v
     s <- sizeof varType
     sub (imm s) rsp
-    move varType (o `Rel` rbp) (0 `Rel` rsp)
+    if allocatedOnHeap then do
+        mov (o `rel` rbp) rbx
+        move varType (0 `Rel` rbx) (0 `Rel` rsp)
+    else
+        move varType (o `Rel` rbp) (0 `Rel` rsp)
     return [varType]
 compileExpression (Dot e@(_ :@ le) (m :@ lm) :@ _) = do
     t <- compileSimpleExpression e
@@ -484,9 +585,19 @@ compileExpression (Call ("new" :@ _) (_ :@ l) :@ _) = do
 compileExpression (Call (f :@ l) es :@ _) = do
     Function{..} <- maybe (throwAt l $ "undefined function " ++ f) return =<< getFunction f
     let ts = map snd parameters
-    p <- packTypesDownwards 0 returns
-    sub (imm (P.size p)) rsp
+    sub (imm (P.size returnPack)) rsp
+    mapM_ allocateVar (P.objects parametersPack)
     compileExpressionsAs ts es
+    p <- packTypesUpwards 0 ts
+    forM_ (zip (P.downwardsAssocs parametersPack) (P.downwardsAssocs p)) $
+        \((po, LocalVar{..}), (eo, t)) -> do
+            let po' = po - 16 + P.size p
+            if allocatedOnHeap then do
+                mov (po' `rel` rsp) rbx
+                move t (eo `Rel` rsp) (0 `Rel` rbx)
+            else do
+                move t (eo `Rel` rsp) (po' `Rel` rsp)
+    add (imm (P.size p)) rsp
     call (function f)
     return returns
 compileExpression (Print es :@ l) = do
@@ -495,7 +606,7 @@ compileExpression (Print es :@ l) = do
     setFmtUsed
     ts <- compileExpressionsWith compileSimpleExpression es
     p <- packTypesUpwards 0 ts
-    printExpressions False rsp p
+    printExpressions False (0 `Rel` rsp) (P.downwardsAssocs p)
     add (imm (P.size p)) rsp
     return []
 compileExpression (Unary ("!" :@ _) e :@ _) = do
@@ -530,15 +641,13 @@ compileExpression (Binary (op :@ _) e1 e2 :@ l) | op `elem` ["==", "!="] = do
     t1 <- compileSimpleExpression e1
     t2 <- compileSimpleExpression e2
     unless (t1 `matches` t2) $ throwAt l $ "cannot match types " ++ show t1 ++ " and " ++ show t2
-    pop rbx
-    pop rax
-    cmp rbx rax
-    al & case op of
-        "==" -> sete
-        "!=" -> setne
+    s <- sizeof t1
+    comp t1 (s `Rel` rsp) (0 `Rel` rsp)
+    label "0"
+    (if op == "==" then sete else setne) al
     movzbq al rax
+    add (imm (2 * s)) rsp
     push rax
-    -- TODO: compare type t1/t2 between o1(rbp) and o2(rbp)
     return ["bool"]
 compileExpression (Binary (op :@ _) e1 e2 :@ _) | op `elem` ["<", "<=", ">", ">="] = do
     compileExpressionAs "int" e1
@@ -594,7 +703,7 @@ compileConcreteExpression :: Expression -> FunctionCompiler Type
 compileConcreteExpression (Nil :@ l) = throwAt l "nil has no concrete type"
 compileConcreteExpression e = compileSimpleExpression e
 
--- Compile une expression avec un type donné.
+-- Compile une expression avec le type donné.
 compileExpressionAs :: Type -> Expression -> FunctionCompiler ()
 compileExpressionAs t e@(_ :@ l) = do
     t' <- compileSimpleExpression e
@@ -605,7 +714,7 @@ compileExpressionsWith :: (Expression -> FunctionCompiler Type) -> Expressions -
 compileExpressionsWith _ ([e@(Call _ _ :@ _)] :@ _) = compileExpression e
 compileExpressionsWith f (es :@ l) = mapM f es
 
--- Compile une ou plusieurs expressions avec des types donnés.
+-- Compile une ou plusieurs expressions avec les types donnés.
 compileExpressionsAs :: [Type] -> Expressions -> FunctionCompiler ()
 compileExpressionsAs ts ([e@(Call _ _ :@ l)] :@ _) | length ts > 1 = do
     ts' <- compileExpression e
@@ -635,10 +744,10 @@ compileFile (File importFmt structuresList functionsList) =
         addFunctions functionsList
         text
         entryPoint
-        mapM_ compileFunction functionsList
+        functions <- gets functions
+        mapM_ compileFunction functions
         data'
         compileStringLiterals
-        functions <- gets functions
         unless ("main" `M.member` functions) $ throw "no main function"
         fmtUsed <- gets fmtUsed
         case importFmt of

@@ -64,7 +64,5 @@ pushDownWithName n s v p
                          , names = M.insert n o (names p)
                          } where o = bottom p - s
 
-traverseDownwards f p = traverse_ (\(o, v) -> f o v) $ reverse $ M.assocs (objects p)
-
 upwardsAssocs p = M.assocs (objects p)
 downwardsAssocs p = reverse $ M.assocs (objects p)
