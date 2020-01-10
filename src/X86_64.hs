@@ -30,8 +30,8 @@ ins2 m a b = ins m [a, b]
     ["leave", "ret", "cqto"]
 [call, ret1, push, pop, jmp, je, jne, sete, setne, setl, setle, setg, setge, inc, dec, neg, idiv] = ins1 <$>
     ["call", "ret", "push", "pop", "jmp", "je", "jne", "sete", "setne", "setl", "setle", "setg", "setge", "inc", "dec", "neg", "idiv"]
-[mov, movq, movzbq, cmove, cmovne, lea, add, sub, imul, and', or', xor, cmp] = ins2 <$>
-    ["mov", "movq", "movzbq", "cmove", "cmovne", "lea", "add", "sub", "imul", "and", "or", "xor", "cmp"]
+[mov, movzbq, cmove, cmovne, lea, add, sub, imul, and', or', xor, cmp] = ins2 <$>
+    ["movq", "movzbq", "cmove", "cmovne", "lea", "add", "sub", "imul", "and", "or", "xor", "cmp"]
 
 zero r = xor r r
 

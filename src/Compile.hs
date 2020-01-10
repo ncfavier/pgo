@@ -235,13 +235,6 @@ compileFunction f@Function{ functionName = n :@ l, .. } = do
         0 -> ret
         s -> ret1 (imm s)
 
--- Vérifie que toutes les variables dans le bloc actuel ont été utilisées.
-checkUnused :: FunctionCompiler ()
-checkUnused = do
-    vars <- gets (P.nameAssocs . head . scopes)
-    sequence_ [ throwAt l $ "unused variable " ++ v
-              | (v, LocalVariable { used = False, definedAt = l }) <- vars ]
-
 -- Compare récursivement deux adresses.
 comp :: Type -> Relative -> Relative -> FunctionCompiler ()
 comp (Type ("int" :@ _)) = compQuad
@@ -290,8 +283,7 @@ clear (Pointer _) = clearQuad
 clear NilType = clearQuad
 
 clearQuad :: Relative -> FunctionCompiler ()
-clearQuad (to `Rel` tb) = do
-    movq (imm 0) (to `rel` tb)
+clearQuad (to `Rel` tb) = mov (imm 0) (to `rel` tb)
 
 -- Fonctions d'affichage.
 
@@ -415,6 +407,13 @@ compileBlock b = do
 compileStatements :: [Statement] -> FunctionCompiler ()
 compileStatements (s:b) = compileStatement s b >> compileStatements b
 compileStatements []    = checkUnused
+
+-- Vérifie que toutes les variables dans le bloc actuel ont été utilisées.
+checkUnused :: FunctionCompiler ()
+checkUnused = do
+    vars <- gets (P.nameAssocs . head . scopes)
+    sequence_ [ throwAt l $ "unused variable " ++ v
+              | (v, LocalVariable { used = False, definedAt = l }) <- vars ]
 
 -- Compile une instruction. Le second argument est le reste du bloc : on en a besoin
 -- pour savoir où allouer les variables locales.
