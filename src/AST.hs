@@ -8,9 +8,8 @@ import Text.Parsec.Pos
 type Location = (SourcePos, SourcePos)
 
 infix 5 :@
-data Located a = a :@ Location
+data Located a = (:@) { forgetLocation :: a, getLocation :: Location }
 
-forgetLocation (a :@ _) = a
 (_ :@ (start, _)) `merge` (_ :@ (_, end)) = (start, end)
 nowhere = (initialPos "", initialPos "")
 

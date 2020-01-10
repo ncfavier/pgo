@@ -2,7 +2,7 @@
 
 Ce projet est réalisé en Haskell, et dépend (uniquement) des bibliothèques et extensions fournies par le compilateur [GHC](https://www.haskell.org/ghc/).
 
-### Analyse lexico-syntaxique
+## Analyse lexico-syntaxique
 
 J'utilise la bibliothèque [parsec](https://hackage.haskell.org/package/parsec), basée sur les combinateurs de parseurs (*parser combinators*), pour l'analyse lexicale et syntaxique.
 
@@ -10,9 +10,9 @@ La principale difficulté de cette partie a été l'insertion automatique de poi
 
 Il y a sans doute des façons plus élégantes de faire ça, notamment en séparant l'analyse lexicale et l'analyse syntaxique.
 
-### Compilation
+## Compilation
 
-J'ai choisi de faire le typage et la production de code en une seule étape, dans le module `Compile`.
+J'ai choisi de faire le typage et la production de code en une seule passe, dans le module `Compile`.
 
 Le module `Pack` fournit un type `Pack` permettant de représenter une zone contiguë en mémoire dans laquelle sont stockés des objets, éventuellement nommés.
 
@@ -24,4 +24,8 @@ La compilation globale a lieu dans la monade `Compiler`, composée des niveaux s
 
 La compilation des fonctions a lieu dans la monade `FunctionCompiler`, qui rajoute un niveau `StateT FunctionState` par-dessus la monade `Compiler`.
 
-Aucune optimisation n'est recherchée.
+Le code produit fait usage des [étiquettes locales](https://sourceware.org/binutils/docs/as/Symbol-Names.html#Local-Labels-1).
+
+Les variables locales sont allouées sur la pile, sauf si elles sont utilisées comme opérande de l'opérateur `&`, auquel cas elles sont allouées sur le tas.
+
+La comparaison des chaînes de caractères ne nécessite que de comparer les adresses, puisque toutes les chaînes de caractères sont soit la chaîne vide (représentée par 0), soit un pointeur vers un *unique* littéral dans le segment de données.
