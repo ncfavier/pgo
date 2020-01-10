@@ -728,7 +728,7 @@ compileSimpleExpression e@(_ :@ l) = do
     ts <- compileExpression e
     case ts of
         [t] -> return t
-        [] -> throwAt l $ "this expression has no value but a single value was expected"
+        [] -> throwAt l "this expression has no value but a single value was expected"
         _ -> throwAt l $ "this expression returns " ++ show (length ts) ++ " values but a single value was expected"
 
 -- Compile une seule expression concrète, c'est à dire une expression simple différente de nil.
