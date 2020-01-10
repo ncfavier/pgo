@@ -1,9 +1,38 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
+{-# LANGUAGE ConstraintKinds #-}
 module X86_64 where
 
 import Control.Monad.Writer
+import Data.String
 import Data.List
+
+infix 3 `Rel`
+data Operand = Imm Integer
+             | Label String
+             | Register String
+             | Rel Integer Operand
+
+(d `Rel` b) `plus` o = d + o `Rel` b
+
+instance Show Operand where
+    show (Imm i)      = '$':show i
+    show (Label l)    = '$':l
+    show (Register r) = '%':r
+    show (Rel d b)    = show d ++ "(" ++ show b ++ ")"
+
+instance Num Operand where
+    fromInteger = Imm
+    (+)         = undefined
+    (*)         = undefined
+    negate      = undefined
+    abs         = undefined
+    signum      = undefined
+
+instance IsString Operand where
+    fromString = Label
+
+type MonadCodeGen = MonadWriter String
 
 indent = replicate 4 ' '
 
@@ -18,33 +47,28 @@ data' = directive "data"
 global s = directive ("global " ++ s)
 string s = directive ("string " ++ show s)
 
-label l = emit (l ++ ":")
+label (Label l) = emit (l ++ ":")
 
+ins :: MonadCodeGen m => String -> [Operand] -> m ()
 ins m [] = emitIndented m
-ins m o = emitIndented (m ++ " " ++ intercalate ", " o)
+ins m o  = emitIndented (m ++ " " ++ intercalate ", " (map show o))
 ins0 m = ins m []
 ins1 m a = ins m [a]
 ins2 m a b = ins m [a, b]
+insLabel m (Label l) = emitIndented (m ++ " " ++ l)
 
 [leave, ret, cqto] = ins0 <$>
     ["leave", "ret", "cqto"]
-[call, ret1, push, pop, jmp, je, jne, sete, setne, setl, setle, setg, setge, inc, dec, neg, idiv] = ins1 <$>
-    ["call", "ret", "push", "pop", "jmp", "je", "jne", "sete", "setne", "setl", "setle", "setg", "setge", "inc", "dec", "neg", "idiv"]
+[ret1, push, pop, sete, setne, setl, setle, setg, setge, inc, dec, neg, idiv] = ins1 <$>
+    ["ret", "push", "pop", "sete", "setne", "setl", "setle", "setg", "setge", "inc", "dec", "neg", "idiv"]
 [mov, movzbq, cmove, cmovne, lea, add, sub, imul, and', or', xor, cmp] = ins2 <$>
     ["movq", "movzbq", "cmove", "cmovne", "lea", "add", "sub", "imul", "and", "or", "xor", "cmp"]
+[call, jmp, je, jne] = insLabel <$>
+    ["call", "jmp", "je", "jne"]
 
 zero r = xor r r
 
-imm i = '$':show i
-immLabel l = '$':l
-immBool b = '$':if b then "1" else "0"
+immBool b = Imm (if b then 1 else 0)
 
-disp `rel` base = show disp ++ "(" ++ base ++ ")"
-
-register = ('%':)
-
-[al, rax, rbx, rcx, rdx, rbp, rsp, rsi, rdi] = register <$>
+[al, rax, rbx, rcx, rdx, rbp, rsp, rsi, rdi] = Register <$>
     ["al", "rax", "rbx", "rcx", "rdx", "rbp", "rsp", "rsi", "rdi"]
-
-infix 3 `Rel`
-data Relative = Integer `Rel` String

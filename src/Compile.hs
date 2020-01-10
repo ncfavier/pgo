@@ -47,7 +47,7 @@ data GlobalState = GlobalState { structures         :: Map String (Maybe Structu
                                , fmtUsed            :: Bool
                                , labelCounter       :: Integer
                                , stringLabelCounter :: Integer
-                               , strings            :: Map String String
+                               , strings            :: Map String Operand
                                }
 
 type Structure = Pack Type
@@ -63,7 +63,7 @@ data Function = Function { functionName   :: Identifier
 data FunctionState = FunctionState { currentFunction :: Function
                                    , scopes          :: [Scope]
                                    , returned        :: Bool
-                                   , returnLabel     :: String
+                                   , returnLabel     :: Operand
                                    }
 
 data LocalVariable = LocalVariable { varType         :: Type
@@ -86,17 +86,17 @@ getFunction f = M.lookup f <$> gets functions
 getFreshLabel = do
     c <- gets labelCounter
     modify' $ \gs -> gs { labelCounter = succ c }
-    return $ ".L" ++ show c
+    return $ Label $ ".L" ++ show c
 
-getStringLiteral "" = return (imm 0)
-getStringLiteral s = immLabel <$> do
+getStringLiteral "" = return 0
+getStringLiteral s = do
     strings <- gets strings
     case M.lookup s strings of
         Just l -> return l
         Nothing -> do
             c <- gets stringLabelCounter
             modify' $ \gs -> gs { stringLabelCounter = succ c }
-            let l = ".LS" ++ show c
+            let l = Label $ ".LS" ++ show c
             modify' $ \gs -> gs { strings = M.insert s l strings }
             return l
 
@@ -206,7 +206,7 @@ addFunction (n :@ l, AST.Function parameters returns body) = do
     when (n `M.member` functions) $ throwAt l $ "duplicate function " ++ n
     modify' $ \gs -> gs { functions = M.insert n f functions }
 
-functionLabel f = "pgo_func_" ++ f
+functionLabel f = Label $ "pgo_func_" ++ f
 
 compileMain :: Compiler ()
 compileMain = do
@@ -233,62 +233,62 @@ compileFunction f@Function{ functionName = n :@ l, .. } = do
     leave
     case P.size parametersPack of
         0 -> ret
-        s -> ret1 (imm s)
+        s -> ret1 (Imm s)
 
 -- Compare récursivement deux adresses.
-comp :: Type -> Relative -> Relative -> FunctionCompiler ()
+comp :: Type -> Operand -> Operand -> FunctionCompiler ()
 comp (Type ("int" :@ _)) = compQuad
 comp (Type ("bool" :@ _)) = compQuad
 comp (Type ("string" :@ _)) = compQuad
-comp (Type (s :@ _)) = \(ao `Rel` ab) (bo `Rel` bb) -> do
+comp (Type (s :@ _)) = \a b -> do
     struct <- getStructure s
     forM_ (P.upwardsAssocs struct) $ \(o, t) ->
-        comp t (ao + o `Rel` ab) (bo + o `Rel` bb)
+        comp t (a `plus` o) (b `plus` o)
 comp (Pointer _) = compQuad
 comp NilType = compQuad
 
-compQuad :: Relative -> Relative -> FunctionCompiler ()
-compQuad (ao `Rel` ab) (bo `Rel` bb) = do
-    mov (ao `rel` ab) rax
-    cmp (bo `rel` bb) rax
+compQuad :: Operand -> Operand -> FunctionCompiler ()
+compQuad a b = do
+    mov a rax
+    cmp b rax
     jne "0f"
 
 -- Déplace récursivement d'une adresse vers une autre.
-move :: Type -> Relative -> Relative -> FunctionCompiler ()
+move :: Type -> Operand -> Operand -> FunctionCompiler ()
 move (Type ("int" :@ _)) = moveQuad
 move (Type ("bool" :@ _)) = moveQuad
 move (Type ("string" :@ _)) = moveQuad
-move (Type (s :@ _)) = \(so `Rel` sb) (to `Rel` tb) -> do
+move (Type (s :@ _)) = \a b -> do
     struct <- getStructure s
     forM_ (P.upwardsAssocs struct) $ \(o, t) ->
-        move t (so + o `Rel` sb) (to + o `Rel` tb)
+        move t (a `plus` o) (b `plus` o)
 move (Pointer _) = moveQuad
 move NilType = moveQuad
 
-moveQuad :: Relative -> Relative -> FunctionCompiler ()
-moveQuad (so `Rel` sb) (to `Rel` tb) = do
-    mov (so `rel` sb) rax
-    mov rax (to `rel` tb)
+moveQuad :: Operand -> Operand -> FunctionCompiler ()
+moveQuad s t = do
+    mov s rax
+    mov rax t
 
 -- Met à zéro récursivement une adresse.
-clear :: Type -> Relative -> FunctionCompiler ()
+clear :: Type -> Operand -> FunctionCompiler ()
 clear (Type ("int" :@ _)) = clearQuad
 clear (Type ("bool" :@ _)) = clearQuad
 clear (Type ("string" :@ _)) = clearQuad
-clear (Type (s :@ _)) = \(to `Rel` tb) -> do
+clear (Type (s :@ _)) = \a -> do
     struct <- getStructure s
     forM_ (P.upwardsAssocs struct) $ \(o, t) ->
-        clear t (to + o `Rel` tb)
+        clear t (a `plus` o)
 clear (Pointer _) = clearQuad
 clear NilType = clearQuad
 
-clearQuad :: Relative -> FunctionCompiler ()
-clearQuad (to `Rel` tb) = mov (imm 0) (to `rel` tb)
+clearQuad :: Operand -> FunctionCompiler ()
+clearQuad t = mov 0 t
 
 -- Fonctions d'affichage.
 
 printCharacter c = do
-    mov (imm (ord c)) rdi
+    mov (Imm (fromIntegral $ ord c)) rdi
     call "putchar"
 
 printNil = do
@@ -297,13 +297,13 @@ printNil = do
     zero rax
     call "printf"
 
-printExpressions :: Bool -> Relative -> [(Integer, Type)] -> FunctionCompiler ()
-printExpressions alwaysSpace (o `Rel` base) es = do
-    flip evalStateT False $ forM_ es $ \(o', t) ->
-        printExpression alwaysSpace (o + o' `Rel` base) t
+printExpressions :: Bool -> Operand -> [(Integer, Type)] -> FunctionCompiler ()
+printExpressions alwaysSpace s es = do
+    flip evalStateT False $ forM_ es $ \(o, t) ->
+        printExpression alwaysSpace (s `plus` o) t
 
-printExpression :: Bool -> Relative -> Type -> StateT Bool FunctionCompiler ()
-printExpression alwaysSpace (o `Rel` base) t = do
+printExpression :: Bool -> Operand -> Type -> StateT Bool FunctionCompiler ()
+printExpression alwaysSpace o t = do
     space <- get
     case t of
         Type ("string" :@ _) -> do
@@ -316,7 +316,7 @@ printExpression alwaysSpace (o `Rel` base) t = do
         Type ("int" :@ _) -> do
             fmt <- getStringLiteral "%lld"
             mov fmt rdi
-            mov (o `rel` base) rsi
+            mov o rsi
             zero rax
             call "printf"
         Type ("bool" :@ _) -> do
@@ -324,14 +324,14 @@ printExpression alwaysSpace (o `Rel` base) t = do
             true <- getStringLiteral "true"
             mov false rax
             mov true rbx
-            cmp (imm 0) (o `rel` base)
+            cmp 0 o
             cmove rax rdi
             cmovne rbx rdi
             zero rax
             call "printf"
         Type ("string" :@ _) -> do
-            mov (o `rel` base) rax
-            cmp (imm 0) rax
+            mov o rax
+            cmp 0 rax
             je "0f"
             fmt <- getStringLiteral "%s"
             mov fmt rdi
@@ -342,12 +342,12 @@ printExpression alwaysSpace (o `Rel` base) t = do
         Type (s :@ _) -> do
             printCharacter '{'
             struct <- getStructure s
-            lift $ printExpressions True (o `Rel` base) (P.upwardsAssocs struct)
+            lift $ printExpressions True o (P.upwardsAssocs struct)
             printCharacter '}'
         NilType -> printNil
         Pointer _ -> do
-            mov (o `rel` base) rax
-            cmp (imm 0) rax
+            mov o rax
+            cmp 0 rax
             je "0f"
             fmt <- getStringLiteral "%p"
             mov fmt rdi
@@ -386,13 +386,13 @@ allocateVariable :: LocalVariable -> FunctionCompiler Integer
 allocateVariable LocalVariable{..} = do
     s <- sizeOf varType
     if allocatedOnHeap then do
-        mov (imm 1) rdi
-        mov (imm s) rsi
+        mov 1 rdi
+        mov (Imm s) rsi
         call "calloc"
         push rax
         return 8
     else do
-        sub (imm s) rsp
+        sub (Imm s) rsp
         clear varType (0 `Rel` rsp)
         return s
 
@@ -402,7 +402,7 @@ compileBlock b = do
     modify' $ \fs -> fs { scopes = P.emptyPackAt bottom:scopes fs }
     compileStatements b
     modify' $ \fs -> fs { scopes = tail (scopes fs) }
-    lea (bottom `rel` rbp) rsp
+    lea (bottom `Rel` rbp) rsp
 
 compileStatements :: [Statement] -> FunctionCompiler ()
 compileStatements (s:b) = compileStatement s b >> compileStatements b
@@ -422,19 +422,19 @@ compileStatement (Block b) _ = compileBlock b
 compileStatement (Expression e) _ = do
     compileExpression e
     bottom <- getBottom
-    lea (bottom `rel` rbp) rsp
+    lea (bottom `Rel` rbp) rsp
 compileStatement (Increment e) _ = do
     compileAddressAs "int" e
     pop rbx
-    mov (0 `rel` rbx) rax
+    mov (0 `Rel` rbx) rax
     inc rax
-    mov rax (0 `rel` rbx)
+    mov rax (0 `Rel` rbx)
 compileStatement (Decrement e) _ = do
     compileAddressAs "int" e
     pop rbx
-    mov (0 `rel` rbx) rax
+    mov (0 `Rel` rbx) rax
     dec rax
-    mov rax (0 `rel` rbx)
+    mov rax (0 `Rel` rbx)
 compileStatement (Var vs mt es@(_ :@ l)) b = do
     (ts, compiledExpressions) <- censor (const "") $ listen $ case mt of
         Just t -> (t <$ vs) <$ case es of
@@ -466,11 +466,11 @@ compileStatement (Var vs mt es@(_ :@ l)) b = do
             _ -> do
                 (vo, LocalVariable{..}) <- getLocalVariable False v
                 if allocatedOnHeap then do
-                    mov (vo `rel` rbp) rbx
+                    mov (vo `Rel` rbp) rbx
                     move t (eo `Rel` rbp) (0 `Rel` rbx)
                 else do
                     move t (eo `Rel` rbp) (vo `Rel` rbp)
-        lea (bottom `rel` rbp) rsp
+        lea (bottom `Rel` rbp) rsp
 compileStatement (Assign vs es) _ = do
     bottom <- getBottom
     ts <- compileExpressionsWith compileSimpleExpression es
@@ -481,7 +481,7 @@ compileStatement (Assign vs es) _ = do
             compileAddressAs t v
             pop rbx
             move t (o `Rel` rbp) (0 `Rel` rbx)
-    lea (bottom `rel` rbp) rsp
+    lea (bottom `Rel` rbp) rsp
 compileStatement (Return es) _ = do
     Function{..} <- gets currentFunction
     bottom <- getBottom
@@ -496,7 +496,7 @@ compileStatement (Return es) _ = do
 compileStatement (If cond yes no) _ = do
     compileExpressionAs "bool" cond
     pop rax
-    cmp (imm 0) rax
+    cmp 0 rax
     labelFalse <- getFreshLabel
     labelEnd <- getFreshLabel
     je labelFalse
@@ -521,7 +521,7 @@ compileStatement (For cond b) _ = do
     label labelCond
     compileExpressionAs "bool" cond
     pop rax
-    cmp (imm 0) rax
+    cmp 0 rax
     jne labelBody
 
 -- Compile une valeur gauche et place son adresse au sommet de la pile.
@@ -529,7 +529,7 @@ compileAddress :: Expression -> FunctionCompiler Type
 compileAddress (Variable ("_" :@ l) :@ _) = throwAt l "invalid use of _ as a left value"
 compileAddress (Variable v :@ _) = do
     (o, LocalVariable{..}) <- getLocalVariable True v
-    (if allocatedOnHeap then mov else lea) (o `rel` rbp) rbx
+    (if allocatedOnHeap then mov else lea) (o `Rel` rbp) rbx
     push rbx
     return varType
 compileAddress (Dot (e :@ le) (m :@ lm) :@ _) = do
@@ -538,11 +538,11 @@ compileAddress (Dot (e :@ le) (m :@ lm) :@ _) = do
     s :@ _ <- case t of
         Type t -> return t
         Pointer (Type t) -> do
-            mov (0 `rel` rbx) rbx
+            mov (0 `Rel` rbx) rbx
             return t
         _ -> throwAt le $ "type " ++ show t ++ " cannot be accessed"
     (o, tm) <- maybe (throwAt lm $ "no member " ++ m ++ " in type " ++ s) return =<< getMember s m
-    add (imm o) rbx
+    add (Imm o) rbx
     push rbx
     return tm
 compileAddress (Unary ("*" :@ _) (e :@ l) :@ _) = do
@@ -550,7 +550,7 @@ compileAddress (Unary ("*" :@ _) (e :@ l) :@ _) = do
     case t of
         Pointer t' -> do
             pop rbx
-            push (0 `rel` rbx)
+            push (0 `Rel` rbx)
             return t'
         _ -> throwAt l $ "cannot dereference a value of type " ++ show t
 compileAddress (e :@ l) = throwAt l "this expression is not a left value"
@@ -565,7 +565,7 @@ compileAddressAs t e@(_ :@ l) = do
 -- Compile une expression et place sa valeur au sommet de la pile.
 compileExpression :: Expression -> FunctionCompiler [Type]
 compileExpression (Int i :@ _) = do
-    mov (imm i) rax
+    mov (Imm i) rax
     push rax
     return ["int"]
 compileExpression (String s :@ _) = do
@@ -573,18 +573,18 @@ compileExpression (String s :@ _) = do
     push l
     return ["string"]
 compileExpression (Bool b :@ _) = do
-    push (imm (if b then 1 else 0))
+    push (Imm (if b then 1 else 0))
     return ["bool"]
 compileExpression (Nil :@ _) = do
-    push (imm 0)
+    push 0
     return [NilType]
 compileExpression (Variable ("_" :@ l) :@ _) = throwAt l "invalid use of _ in an expression"
 compileExpression (Variable v :@ _) = do
     (o, LocalVariable{..}) <- getLocalVariable True v
     s <- sizeOf varType
-    sub (imm s) rsp
+    sub (Imm s) rsp
     if allocatedOnHeap then do
-        mov (o `rel` rbp) rbx
+        mov (o `Rel` rbp) rbx
         move varType (0 `Rel` rbx) (0 `Rel` rsp)
     else
         move varType (o `Rel` rbp) (0 `Rel` rsp)
@@ -595,7 +595,7 @@ compileExpression (Dot e@(_ :@ le) (m :@ lm) :@ _) = do
     s :@ _ <- case t of
         Type t -> do
             mov rsp rbx
-            add (imm st) rsp
+            add (Imm st) rsp
             return t
         Pointer (Type t) -> do
             pop rbx
@@ -603,14 +603,14 @@ compileExpression (Dot e@(_ :@ le) (m :@ lm) :@ _) = do
         _ -> throwAt le $ "type " ++ show t ++ " cannot be accessed"
     (o, tm) <- maybe (throwAt lm $ "no member " ++ m ++ " in type " ++ s) return =<< getMember s m
     stm <- sizeOf tm
-    sub (imm stm) rsp
+    sub (Imm stm) rsp
     move tm (o `Rel` rbx) (0 `Rel` rsp)
     return [tm]
 compileExpression (Call ("new" :@ _) ([Variable n :@ _] :@ _) :@ _) = do
     let t = Type n
     s <- sizeOf t
-    mov (imm 1) rdi
-    mov (imm s) rsi
+    mov 1 rdi
+    mov (Imm s) rsi
     call "calloc"
     push rax
     return [Pointer t]
@@ -619,7 +619,7 @@ compileExpression (Call ("new" :@ _) (_ :@ l) :@ _) = do
 compileExpression (Call (f :@ l) es :@ _) = do
     Function{..} <- maybe (throwAt l $ "undefined function " ++ f) return =<< getFunction f
     let ts = map snd parameters
-    sub (imm (P.size returnPack)) rsp
+    sub (Imm (P.size returnPack)) rsp
     mapM_ allocateVariable (P.objects parametersPack)
     compileExpressionsAs ts es
     p <- packTypesUpwards 0 ts
@@ -627,11 +627,11 @@ compileExpression (Call (f :@ l) es :@ _) = do
         \((po, LocalVariable{..}), (eo, t)) -> do
             let po' = po - 16 + P.size p
             if allocatedOnHeap then do
-                mov (po' `rel` rsp) rbx
+                mov (po' `Rel` rsp) rbx
                 move t (eo `Rel` rsp) (0 `Rel` rbx)
             else do
                 move t (eo `Rel` rsp) (po' `Rel` rsp)
-    add (imm (P.size p)) rsp
+    add (Imm (P.size p)) rsp
     call (functionLabel f)
     return returns
 compileExpression (Print es :@ l) = do
@@ -641,12 +641,12 @@ compileExpression (Print es :@ l) = do
     ts <- compileExpressionsWith compileSimpleExpression es
     p <- packTypesUpwards 0 ts
     printExpressions False (0 `Rel` rsp) (P.downwardsAssocs p)
-    add (imm (P.size p)) rsp
+    add (Imm (P.size p)) rsp
     return []
 compileExpression (Unary ("!" :@ _) e :@ _) = do
     compileExpressionAs "bool" e
     pop rax
-    xor (imm 1) rax
+    xor 1 rax
     push rax
     return ["bool"]
 compileExpression (Unary ("-" :@ _) e :@ _) = do
@@ -661,7 +661,7 @@ compileExpression (Unary ("*" :@ _) e@(_ :@ l) :@ _) = do
         Pointer t' -> do
             pop rbx
             s <- sizeOf t'
-            sub (imm s) rsp
+            sub (Imm s) rsp
             move t' (0 `Rel` rbx) (0 `Rel` rsp)
             return [t']
         _ -> throwAt l $ "cannot dereference type " ++ show t
@@ -680,7 +680,7 @@ compileExpression (Binary (op :@ _) e1 e2 :@ l) | op `elem` ["==", "!="] = do
     label "0"
     (if op == "==" then sete else setne) al
     movzbq al rax
-    add (imm (2 * s)) rsp
+    add (Imm (2 * s)) rsp
     push rax
     return ["bool"]
 compileExpression (Binary (op :@ _) e1 e2 :@ _) | op `elem` ["<", "<=", ">", ">="] = do
