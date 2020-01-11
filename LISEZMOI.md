@@ -52,6 +52,6 @@ Les variables locales sont allouées sur la pile, sauf si elles sont utilisées 
 
 Toutes les variables sont initialement mises à zéro, puisque c'est la valeur par défaut pour chacun des types de base.
 
-Les booléens sont représentés par 0 (`true`) ou 1 (`false`).
+Les booléens sont représentés par 0 (`false`) ou 1 (`true`).
 
 La comparaison des chaînes de caractères ne nécessite que de comparer les adresses, puisque toute chaîne de caractères est soit la chaîne vide (représentée par 0), soit un pointeur vers un *unique* littéral associé au contenu de la chaîne dans le segment de données.

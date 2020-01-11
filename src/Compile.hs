@@ -26,8 +26,9 @@ import qualified Pack as P
 import X86_64
 
 -- This instance allows to access multiple layers of `StateT` without using `lift`,
--- as long as they have different state types. I need it in order to access global state
--- in the same way within `Compiler` and `FunctionCompiler`.
+-- as long as they have different state types.
+-- I need it in order to access global state in the same way within `Compiler`
+-- and `FunctionCompiler`.
 instance {-# OVERLAPPABLE #-} MonadState s m => MonadState s (StateT s' m) where
     get = lift get
     put = lift . put
@@ -64,7 +65,7 @@ data Function = Function { functionName   :: Identifier
                          , returnPack     :: Pack Type
                          }
 
--- Function state.
+-- Function-local state.
 
 data FunctionState = FunctionState { currentFunction :: Function
                                    , scopes          :: [Scope]
@@ -102,13 +103,13 @@ getFreshLabel = do
 getStringLiteral "" = return 0
 getStringLiteral s = do
     strings <- gets strings
-    case M.lookup s strings of
+    case strings M.!? s of
         Just l -> return l
         Nothing -> do
             c <- gets stringLabelCounter
-            modify' $ \gs -> gs { stringLabelCounter = succ c }
             let l = Label $ ".LS" ++ show c
-            modify' $ \gs -> gs { strings = M.insert s l strings }
+            modify' $ \gs -> gs { strings = M.insert s l strings
+                                , stringLabelCounter = succ c }
             return l
 
 getBottom = gets (P.bottom . head . scopes)
@@ -131,11 +132,11 @@ setReturned returned = modify' $ \fs -> fs { returned }
 sizeOf (Type ("int" :@ _)) = return 8
 sizeOf (Type ("bool" :@ _)) = return 8
 sizeOf (Type ("string" :@ _)) = return 8
-sizeOf (Type (t :@ l)) = do
+sizeOf (Type (s :@ l)) = do
     structures <- gets structures
-    case M.lookup t structures of
-        Just ~(Right s) -> return (P.size s)
-        _               -> throwAt l $ "invalid type " ++ t
+    case structures M.!? s of
+        Just ~(Right p) -> return (P.size p)
+        _               -> throwAt l $ "invalid type " ++ s
 sizeOf (Pointer t) = 8 <$ sizeOf t
 sizeOf NilType = return 8
 
