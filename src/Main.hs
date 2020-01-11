@@ -13,36 +13,43 @@ import Compile
 data Stage = Parse | Type | Compile
            deriving (Eq, Ord)
 
+usage :: IO a
 usage = die "usage: pgoc [ --parse-only | --type-only ] FILE"
 
-errorHeader file lineStart lineEnd columnStart columnEnd =
-    if lineStart == lineEnd then
-        printf "File \"%s\", line %d, characters %d-%d:" file lineStart columnStart columnEnd
-    else
-        printf "File \"%s\", lines %d-%d, characters %d-%d:" file lineStart lineEnd columnStart columnEnd
+errorHeader :: SourcePos -> SourcePos -> String
+errorHeader start end
+    | ls == le  = printf "File \"%s\", line %d, characters %d-%d:" f ls cs ce
+    | otherwise = printf "File \"%s\", lines %d-%d, characters %d-%d:" f ls le cs ce
+    where
+        [ls, le] = sourceLine   <$> [start, end]
+        [cs, ce] = sourceColumn <$> [start, end]
+        f        = sourceName start
 
+parseError :: ParseError -> IO a
 parseError err = die $
-    errorHeader file line line column column ++
+    errorHeader pos pos ++
     showErrorMessages "or" "unknown error" "expecting" "unexpected character" "end of file" (errorMessages err)
-    where pos = errorPos err; file = sourceName pos; line = sourceLine pos; column = sourceColumn pos
+    where pos = errorPos err
 
-typeError file (e :@ (start, end)) = die $ errorHeader file ls le cs ce ++ "\ntype error: " ++ e
-    where [ls, le, cs, ce] = [sourceLine, sourceColumn] <*> [start, end]
+typeError :: TypeError -> IO a
+typeError (err :@ (start, end)) = die $
+    errorHeader start end ++ "\ntype error: " ++ err
 
+main :: IO ()
 main = do
     -- Process command line arguments
     args <- getArgs
-    (inputFile, stage) <- maybe usage return $ case args of
-        ["--parse-only", inputFile] -> Just (inputFile, Parse)
-        ["--type-only", inputFile]  -> Just (inputFile, Type)
-        [inputFile]                 -> Just (inputFile, Compile)
-        _ -> Nothing
+    (f, stage) <- maybe usage return $ case args of
+        ["--parse-only", f] -> Just (f, Parse)
+        ["--type-only", f]  -> Just (f, Type)
+        [f]                 -> Just (f, Compile)
+        _                   -> Nothing
     -- Parse
-    input <- readFile inputFile
-    f <- either parseError return $ parseFile inputFile input
+    input <- readFile f
+    file <- either parseError return $ parseFile f input
     when (stage <= Parse) exitSuccess
     -- Compile
-    output <- either (typeError inputFile) return $ compileFile f
+    output <- either typeError return $ compileFile file
     when (stage <= Type) exitSuccess
-    -- Write
-    writeFile (inputFile -<.> "s") output
+    -- Output
+    writeFile (f -<.> "s") output

@@ -1,3 +1,4 @@
+{-# LANGUAGE RecordWildCards #-}
 module Pack where
 
 import Data.Foldable
@@ -10,33 +11,31 @@ data Pack a = Pack { bottom  :: Integer
                    , names   :: Map String Integer
                    }
 
-emptyPackAt :: Integer -> Pack a
-emptyPackAt o = Pack o o M.empty M.empty
+emptyAt :: Integer -> Pack a
+emptyAt o = Pack o o M.empty M.empty
 
-emptyPack :: Pack a
-emptyPack = emptyPackAt 0
+empty :: Pack a
+empty = emptyAt 0
 
 size :: Pack a -> Integer
 size p = top p - bottom p
 
-nameAssocs :: Pack a -> [(String, a)]
-nameAssocs p = [(n, v) | (n, o) <- M.assocs (names p), Just v <- [M.lookup o (objects p)]]
+(!?) :: Pack a -> String -> Maybe (Integer, a)
+Pack{..} !? n = do
+    o <- names M.!? n
+    v <- objects M.!? o
+    return (o, v)
 
-getOffsetByName :: String -> Pack a -> Maybe Integer
-getOffsetByName n p = M.lookup n (names p)
+namedObjects :: Pack a -> [(String, a)]
+namedObjects p = [ (n, v)
+                 | (n, o) <- M.assocs (names p)
+                 , Just v <- [M.lookup o (objects p)] ]
 
-getValueByName :: String -> Pack a -> Maybe a
-getValueByName n p = M.lookup (names p M.! n) (objects p)
+upwardsObjects :: Pack a -> [(Integer, a)]
+upwardsObjects p = M.assocs (objects p)
 
-getOffsetAndValueByName :: String -> Pack a -> Maybe (Integer, a)
-getOffsetAndValueByName n p = do
-    offset <- M.lookup n (names p)
-    value <- M.lookup offset (objects p)
-    return (offset, value)
-
-updateByName :: String -> a -> Pack a -> Pack a
-updateByName n v p | Just offset <- M.lookup n (names p) =
-    p { objects = M.insert offset v (objects p) }
+downwardsObjects :: Pack a -> [(Integer, a)]
+downwardsObjects p = reverse $ M.assocs (objects p)
 
 pushUp :: Integer -> a -> Pack a -> Pack a
 pushUp s v p = p { top = top p + s
@@ -64,5 +63,6 @@ pushDownWithName n s v p
                          , names = M.insert n o (names p)
                          } where o = bottom p - s
 
-upwardsAssocs p = M.assocs (objects p)
-downwardsAssocs p = reverse $ M.assocs (objects p)
+update :: String -> a -> Pack a -> Pack a
+update n v p | Just offset <- M.lookup n (names p) =
+    p { objects = M.insert offset v (objects p) }

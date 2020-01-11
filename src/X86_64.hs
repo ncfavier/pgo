@@ -1,6 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
-{-# LANGUAGE ConstraintKinds #-}
 module X86_64 where
 
 import Control.Monad.Writer
@@ -13,7 +12,8 @@ data Operand = Imm Integer
              | Register String
              | Rel Integer Operand
 
-(d `Rel` b) `plus` o = d + o `Rel` b
+(d `Rel` b) `shift` o = d + o `Rel` b
+o `shift` _ = o
 
 instance Show Operand where
     show (Imm i)      = '$':show i
@@ -32,8 +32,6 @@ instance Num Operand where
 instance IsString Operand where
     fromString = Label
 
-type MonadCodeGen = MonadWriter String
-
 indent = replicate 4 ' '
 
 emit s = tell (s ++ "\n")
@@ -49,7 +47,7 @@ string s = directive ("string " ++ show s)
 
 label (Label l) = emit (l ++ ":")
 
-ins :: MonadCodeGen m => String -> [Operand] -> m ()
+ins :: MonadWriter String m => String -> [Operand] -> m ()
 ins m [] = emitIndented m
 ins m o  = emitIndented (m ++ " " ++ intercalate ", " (map show o))
 ins0 m = ins m []
