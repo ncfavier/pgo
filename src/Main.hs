@@ -32,8 +32,9 @@ parseError err = die $
     where pos = errorPos err
 
 typeError :: TypeError -> IO a
-typeError (err :@ (start, end)) = die $
+typeError (err :@ Just (start, end)) = die $
     errorHeader start end ++ "\ntype error: " ++ err
+typeError (err :@ Nothing) = die $ "type error: " ++ err
 
 main :: IO ()
 main = do

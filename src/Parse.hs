@@ -60,7 +60,7 @@ located p = do
    start <- getPosition
    r <- p
    end <- getLexemeEnd
-   return $ r :@ (start, end)
+   return $ r :@ Just (start, end)
 
 symbol s = lexeme final $ l (show s) $ string s
     where final = s `elem` [")", "}"]
@@ -203,7 +203,7 @@ term = Int <$> integer
             return "fmt.Print"
 
 dottedTerm = do e <- located term
-                foldl (\e m -> Dot e m :@ e `merge` m) e <$> many (symbol "." >> identifier)
+                foldl (\e m -> Dot e m :@ e ++@ m) e <$> many (symbol "." >> identifier)
 
 expression = buildExpressionParser operators dottedTerm
     where
@@ -215,9 +215,9 @@ expression = buildExpressionParser operators dottedTerm
                     , binary <$> ["||"]
                     ]
         unary op = Prefix (do o <- try (operator op)
-                              return (\e -> Unary o e :@ o `merge` e))
+                              return (\e -> Unary o e :@ o ++@ e))
         binary op = Infix (do o <- try (operator op)
-                              return (\e1 e2 -> Binary o e1 e2 :@ e1 `merge` e2))
+                              return (\e1 e2 -> Binary o e1 e2 :@ e1 ++@ e2))
                           AssocLeft
 
 file :: Parser File

@@ -5,13 +5,17 @@ import Data.String
 import Text.Parsec
 import Text.Parsec.Pos
 
-type Location = (SourcePos, SourcePos)
+type Location = Maybe (SourcePos, SourcePos)
 
 infix 5 :@
 data Located a = (:@) { forgetLocation :: a, getLocation :: Location }
 
-(_ :@ (start, _)) `merge` (_ :@ (_, end)) = (start, end)
-nowhere = (initialPos "", initialPos "")
+nowhere :: Location
+nowhere = Nothing
+
+(++@) :: Located a -> Located b -> Location
+(_ :@ Just (start, _)) ++@ (_ :@ Just (_, end)) = Just (start, end)
+_ ++@ _ = Nothing
 
 data Type = Type Identifier
           | Pointer Type
