@@ -505,9 +505,8 @@ compileStatement (Return es) _ = do
     bottom <- getBottom
     compileExpressionsAs returns es
     pe <- packTypesDownwards bottom returns
-    let f (ro, _) (eo, t) = do
-            move t (eo `Rel` rbp) (ro `Rel` rbp)
-    zipWithM f (P.downwardsObjects returnPack) (P.downwardsObjects pe)
+    forM_ (zip (P.downwardsObjects returnPack) (P.downwardsObjects pe)) $ \((ro, _), (eo, t)) -> do
+        move t (eo `Rel` rbp) (ro `Rel` rbp)
     returnLabel <- gets returnLabel
     jmp returnLabel
     setReturned True
