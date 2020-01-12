@@ -20,7 +20,7 @@ Le module `Pack` fournit un type `Pack` permettant de représenter une zone cont
 
 Le module `X86_64` fournit des fonctions pour la génération de code assembleur.
 
-La compilation globale a lieu dans la monade `Compiler`, composée des niveaux suivants :
+La compilation globale a lieu dans la monade `Compiler`, composée des [transformateurs de monades](https://en.wikipedia.org/wiki/Monad_transformer) suivants :
 
 - `Except TypeError` pour les erreurs de typage ;
 - `WriterT String` pour la production de code ;
@@ -28,7 +28,7 @@ La compilation globale a lieu dans la monade `Compiler`, composée des niveaux s
 
 La compilation des fonctions a lieu dans la monade `FunctionCompiler`, qui rajoute un niveau `StateT FunctionState` par-dessus la monade `Compiler`.
 
-La structure de donnée utilisée pour les associations (structures, champs, fonctions, variables, etc.) est `Data.Map`, qui est implémentée avec des arbres binaires de recherche équilibrés.
+La structure de donnée utilisée pour les associations (structures, champs, fonctions, variables, etc.) est [`Data.Map`](https://hackage.haskell.org/package/containers-0.6.2.1/docs/Data-Map-Strict.html), qui est implémentée avec des arbres binaires de recherche équilibrés.
 
 La compilation débute avec `compileFile` et se déroule ainsi, dans les grandes lignes :
 
@@ -39,7 +39,7 @@ La compilation débute avec `compileFile` et se déroule ainsi, dans les grandes
     - on vérifie l'unicité des noms
     - on vérifie que la fonction `main` a la bonne signature
     - on construit un `Pack` pour les arguments, et un pour les valeurs de retour
-- on compile le point d'entrée de la librairie C
+- on compile le point d'entrée du programme C
 - on compile les fonctions : pour chaque fonction,
     - on ajoute les paramètres de la fonction à la portée initiale
     - on compile le corps de la fonction
@@ -48,11 +48,11 @@ La compilation débute avec `compileFile` et se déroule ainsi, dans les grandes
 - on vérifie qu'il y a une fonction `main`
 - on vérifie que `fmt` est utilisé, s'il est importé
 
-Le type de `nil` est représenté par `Pointer Any`, où `Any` est un type fictif qui compare égal à n'importe quel type (c'est une forme ultra-simpliste d'unification).
+Le type de `nil` est représenté par `Pointer Any`, où `Any` est un type fictif égal à n'importe quel type ; c'est une forme ultra-simpliste d'unification où les types sont unifiés par simple comparaison d'égalité.
 
 Le code produit fait usage des [étiquettes locales](https://sourceware.org/binutils/docs/as/Symbol-Names.html#Local-Labels-1).
 
-La librairie C est utilisée pour l'affichage (`printf` et `putchar`) et pour l'allocation sur le tas (`sbrk`).
+La bibliothèque standard du C est utilisée pour l'affichage (`printf` et `putchar`) et pour l'allocation sur le tas (`sbrk`).
 
 Les variables locales sont allouées sur la pile, sauf si elles sont utilisées comme opérande de l'opérateur `&`, auquel cas elles sont allouées sur le tas. Les variables allouées sur le tas sont représentées par un pointeur sur la pile.
 
