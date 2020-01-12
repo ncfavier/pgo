@@ -22,8 +22,8 @@ size p = top p - bottom p
 
 (!?) :: Pack a -> String -> Maybe (Integer, a)
 Pack{..} !? n = do
-    o <- names M.!? n
-    v <- objects M.!? o
+    o <- M.lookup n names
+    v <- M.lookup o objects
     return (o, v)
 
 namedObjects :: Pack a -> [(String, a)]

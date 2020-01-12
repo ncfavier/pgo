@@ -105,7 +105,7 @@ getFreshLabel = do
 getStringLiteral "" = return 0
 getStringLiteral s = do
     strings <- gets strings
-    case strings M.!? s of
+    case M.lookup s strings of
         Just l -> return l
         Nothing -> do
             c <- gets stringLabelCounter
@@ -136,7 +136,7 @@ sizeOf (Type ("bool" :@ _)) = return 8
 sizeOf (Type ("string" :@ _)) = return 8
 sizeOf (Type (s :@ l)) = do
     structures <- gets structures
-    case structures M.!? s of
+    case M.lookup s structures of
         Just ~(Right p) -> return (P.size p)
         _               -> throwAt l $ "invalid type " ++ s
 sizeOf (Pointer t) = 8 <$ sizeOf t
