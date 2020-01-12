@@ -16,8 +16,8 @@ data Stage = Parse | Type | Compile
 usage :: IO a
 usage = die "usage: pgoc [ --parse-only | --type-only ] FILE"
 
-errorHeader :: SourcePos -> SourcePos -> String
-errorHeader start end
+errorHeader :: (SourcePos, SourcePos) -> String
+errorHeader (start, end)
     | ls == le  = printf "File \"%s\", line %d, characters %d-%d:" f ls cs ce
     | otherwise = printf "File \"%s\", lines %d-%d, characters %d-%d:" f ls le cs ce
     where
@@ -27,13 +27,13 @@ errorHeader start end
 
 parseError :: ParseError -> IO a
 parseError err = die $
-    errorHeader pos pos ++
+    errorHeader (pos, pos) ++
     showErrorMessages "or" "unknown error" "expecting" "unexpected character" "end of file" (errorMessages err)
     where pos = errorPos err
 
 typeError :: TypeError -> IO a
-typeError (err :@ Just (start, end)) = die $
-    errorHeader start end ++ "\ntype error: " ++ err
+typeError (err :@ Just l) = die $
+    errorHeader l ++ "\ntype error: " ++ err
 typeError (err :@ Nothing) = die $ "type error: " ++ err
 
 main :: IO ()

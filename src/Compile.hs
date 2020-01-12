@@ -190,20 +190,23 @@ addStructure = go [] where
         structs <- gets structures
         case structs M.! n of
             Left fields -> do
-                let addField s (f :@ l, t) = do
-                        structs <- gets structures
-                        case t of
-                            Type (n' :@ _) | n' `M.member` structs -> do
-                                let seen' = n:seen
-                                    cycle = dropWhileEnd (/= n') seen'
-                                unless (null cycle) $ throwAt l $ "recursive " ++ plural (length cycle) "structure" ++ " " ++ intercalate ", " cycle
-                                go seen' n'
-                            _ -> return ()
-                        size <- sizeOf t
-                        maybe (throwAt l $ "duplicate field " ++ f ++ " in structure " ++ n) return $ P.pushUpWithName f size t s
                 structure <- foldlM addField P.empty fields
                 modify' $ \gs -> gs { structures = M.insert n (Right structure) (structures gs) }
             _ -> return ()
+        where
+        addField s (f :@ l, t) = do
+            structs <- gets structures
+            case t of
+                Type (n' :@ _) | n' `M.member` structs -> do
+                    let seen' = n:seen
+                        cycle = dropWhileEnd (/= n') seen'
+                    unless (null cycle) $ throwAt l $
+                        "recursive " ++ plural (length cycle) "structure" ++ " " ++ intercalate ", " cycle
+                    go seen' n'
+                _ -> return ()
+            size <- sizeOf t
+            maybe (throwAt l $ "duplicate field " ++ f ++ " in structure " ++ n) return $
+                P.pushUpWithName f size t s
 
 addFunction :: (Identifier, AST.Function) -> Compiler ()
 addFunction (functionName@(n :@ l), AST.Function parameters returns body) = do
