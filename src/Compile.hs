@@ -11,7 +11,7 @@ module Compile (compileFile, TypeError(..)) where
 import Control.Monad
 import Control.Monad.Except
 import Control.Monad.State.Strict
-import Control.Monad.Writer
+import Control.Monad.Writer hiding (Any)
 import Data.Char
 import Data.Foldable
 import Data.List
@@ -140,7 +140,7 @@ sizeOf (Type (s :@ l)) = do
         Just ~(Right p) -> return (P.size p)
         _               -> throwAt l $ "invalid type " ++ s
 sizeOf (Pointer t) = 8 <$ sizeOf t
-sizeOf NilType = return 8
+sizeOf Any = return 0
 
 -- Builds a `Pack` from a list of types.
 packTypesUpwards offset ts = foldrM f (P.emptyAt offset) ts
@@ -274,7 +274,6 @@ recursively f (Type (s :@ _)) = \a b -> do
     forM_ (P.upwardsObjects struct) $ \(o, t) ->
         recursively f t (a `shift` o) (b `shift` o)
 recursively f (Pointer _) = f
-recursively f NilType = f
 
 -- Check two objects for equality, with short-circuit.
 comp :: Type -> Operand -> Operand -> FunctionCompiler ()
@@ -353,7 +352,7 @@ printExpression alwaysSpace o t = do
             struct <- getStructure s
             lift $ printExpressions True o (P.upwardsObjects struct)
             printCharacter '}'
-        NilType -> printNil
+        Pointer Any -> printNil
         Pointer _ -> do
             mov o rax
             cmp 0 rax
@@ -561,11 +560,11 @@ compileAddress (Dot (e :@ le) (m :@ lm) :@ _) = do
     add (Imm o) rbx
     push rbx
     return tm
+compileAddress (Unary ("*" :@ _) (Nil :@ l) :@ _) = throwAt l "cannot dereference nil"
 compileAddress (Unary ("*" :@ _) (e :@ l) :@ _) = do
     t <- compileSimpleExpression (e :@ l)
     case t of
         Pointer t' -> return t'
-        NilType -> throwAt l "cannot dereference nil"
         _ -> throwAt l $ "cannot dereference a value of type " ++ show t
 compileAddress (e :@ l) = throwAt l "this expression is not a left value"
 
@@ -573,7 +572,7 @@ compileAddress (e :@ l) = throwAt l "this expression is not a left value"
 compileAddressAs :: Type -> Expression -> FunctionCompiler ()
 compileAddressAs t e@(_ :@ l) = do
     t' <- compileAddress e
-    unless (t `matches` t') $ throwAt l $
+    unless (t == t') $ throwAt l $
         "this value has type " ++ show t' ++ " but was expected of type " ++ show t
 
 -- Compiles an expression and pushes its value to the stack.
@@ -591,7 +590,7 @@ compileExpression (Bool b :@ _) = do
     return ["bool"]
 compileExpression (Nil :@ _) = do
     push 0
-    return [NilType]
+    return [Pointer Any]
 compileExpression (Variable ("_" :@ l) :@ _) = throwAt l "invalid use of _ in an expression"
 compileExpression (Variable v :@ _) = do
     (o, LocalVariable{..}) <- getLocalVariable True v
@@ -624,8 +623,7 @@ compileExpression (Call ("new" :@ _) ([Variable n :@ _] :@ _) :@ _) = do
     let t = Type n
     allocateOnHeap t
     return [Pointer t]
-compileExpression (Call ("new" :@ _) (_ :@ l) :@ _) = do
-    throwAt l "new() expects a single type name"
+compileExpression (Call ("new" :@ _) (_ :@ l) :@ _) = throwAt l "new() expects a single type name"
 compileExpression (Call (f :@ l) es :@ _) = do
     Function{..} <- maybe (throwAt l $ "undefined function " ++ f) return =<< getFunction f
     let ts = map snd parameters
@@ -681,7 +679,7 @@ compileExpression (Binary (op :@ _) (Nil :@ _) (Nil :@ _) :@ l) | op `elem` ["==
 compileExpression (Binary (op :@ _) e1 e2 :@ l) | op `elem` ["==", "!="] = do
     t1 <- compileSimpleExpression e1
     t2 <- compileSimpleExpression e2
-    unless (t1 `matches` t2) $ throwAt l $ "cannot match types " ++ show t1 ++ " and " ++ show t2
+    unless (t1 == t2) $ throwAt l $ "cannot match types " ++ show t1 ++ " and " ++ show t2
     s <- sizeOf t1
     comp t1 (s `Rel` rsp) (0 `Rel` rsp)
     label "0"
@@ -746,7 +744,7 @@ compileConcreteExpression e = compileSimpleExpression e
 compileExpressionAs :: Type -> Expression -> FunctionCompiler ()
 compileExpressionAs t e@(_ :@ l) = do
     t' <- compileSimpleExpression e
-    unless (t' `matches` t) $ throwAt l $ "this expression has type " ++ show t' ++ " but was expected of type " ++ show t
+    unless (t' == t) $ throwAt l $ "this expression has type " ++ show t' ++ " but was expected of type " ++ show t
 
 -- Compiles zero or more expressions.
 compileExpressionsWith :: (Expression -> FunctionCompiler Type) -> Expressions -> FunctionCompiler [Type]
@@ -758,17 +756,10 @@ compileExpressionsAs :: [Type] -> Expressions -> FunctionCompiler ()
 compileExpressionsAs ts ([e@(Call _ _ :@ l)] :@ _) | length ts > 1 = do
     ts' <- compileExpression e
     unless (length ts' == length ts) $ throwAt l $ "this function returns " ++ length ts' +++ "value" ++ " but " ++ length ts +++ "value" ++ " were expected"
-    unless (and $ zipWith matches ts ts') $ throwAt l $ "couldn't match type " ++ show ts' ++ " with expected type " ++ show ts
+    unless (and $ zipWith (==) ts ts') $ throwAt l $ "couldn't match type " ++ show ts' ++ " with expected type " ++ show ts
 compileExpressionsAs ts (es :@ l) = do
     unless (length es == length ts) $ throwAt l $ "expected " ++ length ts +++ "expression" ++ ", got " ++ show (length es)
     zipWithM_ compileExpressionAs ts es
-
--- Checks for compatibility between types.
-matches :: Type -> Type -> Bool
-NilType   `matches` NilType   = False
-NilType   `matches` Pointer _ = True
-Pointer _ `matches` NilType   = True
-a         `matches` b         = a == b
 
 compileStringLiterals :: Compiler ()
 compileStringLiterals = do

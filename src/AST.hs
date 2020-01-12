@@ -19,8 +19,7 @@ _ ++@ _ = Nothing
 
 data Type = Type Identifier
           | Pointer Type
-          | NilType
-          deriving Eq
+          | Any
 
 type Identifier = Located String
 type Operator = Located String
@@ -64,10 +63,17 @@ type Expressions = Located [Expression]
 instance Eq a => Eq (Located a) where
     a :@ _ == b :@ _ = a == b
 
+instance Eq Type where
+    Type a    == Type b    = a == b
+    Pointer a == Pointer b = a == b
+    Any       == _         = True
+    _         == Any       = True
+    _         == _         = False
+
 instance Show Type where
     show (Type (t :@ _)) = t
+    show (Pointer Any) = "nil"
     show (Pointer t) = '*':show t
-    show NilType = "nil"
     showList ts = showParen (length (take 2 ts) /= 1) $
         showString (intercalate ", " (map show ts))
 

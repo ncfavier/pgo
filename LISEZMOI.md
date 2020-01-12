@@ -48,6 +48,8 @@ La compilation débute avec `compileFile` et se déroule ainsi, dans les grandes
 - on vérifie qu'il y a une fonction `main`
 - on vérifie que `fmt` est utilisé, s'il est importé
 
+Le type de `nil` est représenté par `Pointer Any`, où `Any` est un type fictif qui compare égal à n'importe quel type (c'est une forme ultra-simpliste d'unification).
+
 Le code produit fait usage des [étiquettes locales](https://sourceware.org/binutils/docs/as/Symbol-Names.html#Local-Labels-1).
 
 La librairie C est utilisée pour l'affichage (`printf` et `putchar`) et pour l'allocation sur le tas (`sbrk`).
