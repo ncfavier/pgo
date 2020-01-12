@@ -14,7 +14,11 @@ Il y a sans doute des façons plus élégantes de faire ça, notamment en sépar
 
 J'ai choisi de faire le typage et la production de code en une seule passe, dans le module `Compile`.
 
+Les arbres de syntaxe abstraite sont définis dans le module `AST`.
+
 Le module `Pack` fournit un type `Pack` permettant de représenter une zone contiguë en mémoire dans laquelle sont stockés des objets, éventuellement nommés.
+
+Le module `X86_64` fournit des fonctions pour la génération de code assembleur.
 
 La compilation globale a lieu dans la monade `Compiler`, composée des niveaux suivants :
 

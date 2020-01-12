@@ -85,6 +85,8 @@ type Compiler = StateT GlobalState (WriterT String (Except TypeError))
 
 type FunctionCompiler = StateT FunctionState Compiler
 
+-- Utilities.
+
 hide = censor (const mempty) . listen
 
 getStructure s = do
@@ -146,6 +148,8 @@ packTypesUpwards offset ts = foldrM f (P.emptyAt offset) ts
 packTypesDownwards offset ts = foldlM f (P.emptyAt offset) ts
     where f p t = do s <- sizeOf t; return (P.pushDown s t p)
 
+-- Compilation starts here.
+
 compileFile :: File -> Either TypeError String
 compileFile (File importFmt structuresList functionsList) =
     runExcept $ execWriterT $ flip evalStateT initialGlobalState $ do
@@ -202,7 +206,7 @@ addStructure = go [] where
             _ -> return ()
 
 addFunction :: (Identifier, AST.Function) -> Compiler ()
-addFunction (n :@ l, AST.Function parameters returns body) = do
+addFunction (functionName@(n :@ l), AST.Function parameters returns body) = do
     functions <- gets functions
     when (n `M.member` functions) $ throwAt l $ "duplicate function " ++ n
     when (n == "main") $ do
@@ -222,9 +226,9 @@ addFunction (n :@ l, AST.Function parameters returns body) = do
                 P.pushUpWithName v s' lv sc
     parametersPack <- foldrM addParameter (P.emptyAt 16) parameters
     returnPack <- packTypesUpwards (P.top parametersPack) returns
-    let f = Function { functionName = n :@ l, .. }
-    modify' $ \gs -> gs { functions = M.insert n f functions }
+    modify' $ \gs -> gs { functions = M.insert n Function{..} functions }
 
+functionLabel :: String -> Operand
 functionLabel f = Label $ "pgo_func_" ++ f
 
 compileMain :: Compiler ()
